@@ -1,17 +1,13 @@
 name: Build APK
 on:
   push:
-    branches: [main, master]
     tags:
-      - "v*" # Trigger on version tags
-  pull_request:
-    branches: [main, master]
+      - "v*"
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,30 +18,23 @@ jobs:
           java-version: "17"
           distribution: "temurin"
 
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_FILE }}" | base64 -d > aiostreams-release.jks
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
       - name: Build Debug APK
         run: ./gradlew :aiostreams:assembleDebug
 
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: aiostreams-debug-apk
-          path: aiostreams/build/outputs/apk/debug/*.apk
-
       - name: Build Release APK
         run: ./gradlew :aiostreams:assembleRelease
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
-      - name: Upload Release APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: aiostreams-release-apk
-          path: aiostreams/build/outputs/apk/release/*.apk
-
-      # Create GitHub Release
       - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
           files: |

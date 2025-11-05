@@ -17,7 +17,7 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     compileSdk 34
-    namespace "eu.kanade.tachiyomi.animeextension.aiostreams"
+    namespace "eu.kanade.tachiyomi.animeextension.all.aiostreams"
 
     sourceSets {
         main {
@@ -29,11 +29,11 @@ android {
     }
 
     defaultConfig {
-        applicationId "eu.kanade.tachiyomi.animeextension.aiostreams"
+        applicationId "eu.kanade.tachiyomi.animeextension.all.aiostreams"
         minSdk 21
         targetSdk 34
         versionCode extVersionCode
-        versionName "1.0"
+        versionName "14.${extVersionCode}"
         
         manifestPlaceholders = [
             appName : "Aniyomi: ${extName}",

@@ -1,0 +1,64 @@
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+apply plugin: 'kotlinx-serialization'
+
+ext {
+    extName = 'AIOStreams'
+    extClass = '.AIOStreams'
+    extVersionCode = 1
+}
+
+android {
+    compileSdk 34
+    namespace "eu.kanade.tachiyomi.animeextension.aiostreams"
+
+    sourceSets {
+        main {
+            manifest.srcFile "AndroidManifest.xml"
+            java.srcDirs = ['src']
+            res.srcDirs = ['res']
+            assets.srcDirs = ['assets']
+        }
+    }
+
+    defaultConfig {
+        applicationId "eu.kanade.tachiyomi.animeextension.aiostreams"
+        minSdk 21
+        targetSdk 34
+        versionCode extVersionCode
+        versionName "1.0"
+        
+        manifestPlaceholders = [
+            appName : "Aniyomi: ${extName}",
+            extClass: extClass,
+            nsfw    : 0,
+        ]
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = "1.8"
+    }
+}
+
+dependencies {
+    implementation(project(":core"))
+    compileOnly(libs.bundles.common)
+}

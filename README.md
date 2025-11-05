@@ -4,7 +4,7 @@ An **Aniyomi** extension that aggregates anime streams from multiple debrid serv
 
 ## Setup
 
-1. Visit [AIOStreams Configuration](https://aiostreamsfortheweak.nhyira.dev/stremio/configure) (or another instance)
+1. Visit [AIOStreams Configuration](https://aiostreamsfortheweak.nhyira.dev/stremio/configure) (or any other instance)
 2. Add your debrid services (TorBox, RealDebrid, etc.)
 3. Enable anime addons (Comet, MediaFusion, etc.)
 4. Click **Create** and copy the generated manifest URL

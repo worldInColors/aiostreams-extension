@@ -8,6 +8,13 @@ ext {
     extVersionCode = 1
 }
 
+// Load keystore properties
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+
 android {
     compileSdk 34
     namespace "eu.kanade.tachiyomi.animeextension.aiostreams"
@@ -35,8 +42,18 @@ android {
         ]
     }
 
+    signingConfigs {
+        release {
+            storeFile rootProject.file("aiostreams-release.jks")
+            storePassword keystoreProperties['KEYSTORE_PASSWORD'] ?: System.getenv("KEYSTORE_PASSWORD")
+            keyAlias "aiostreams"
+            keyPassword keystoreProperties['KEY_PASSWORD'] ?: System.getenv("KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
         }
         debug {

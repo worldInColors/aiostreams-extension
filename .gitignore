@@ -11,6 +11,11 @@ local.properties
 *.dex
 captures/
 
+# Keystore files 
+*.jks
+*.keystore
+keystore.properties
+
 # IntelliJ IDEA
 .idea/
 *.iml

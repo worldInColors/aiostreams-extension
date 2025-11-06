@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
+import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
@@ -247,10 +248,10 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val mappings = json.getJSONObject("mappings")
         val type = mappings.optString("type", "")
 
-        // Get all available IDs
         val anilistId = mappings.getInt("anilist_id")
         val malId = mappings.optInt("mal_id", -1).takeIf { it != -1 }
         val kitsuId = mappings.optInt("kitsu_id", -1).takeIf { it != -1 }
+        val imdbId = mappings.optString("imdb_id", "").takeIf { it.isNotEmpty() }
 
         return when (type) {
             "TV", "ONA", "OVA" -> {
@@ -261,16 +262,17 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                 while (keys.hasNext()) {
                     val episodeNum = keys.next()
 
-                    // Skip specials/OVAs (e.g., "S1", "S2", "O1") - only process numeric episodes
+                    // Skip specials/OVAs (e.g., "S1", "S2", "O1"): only process numeric episodes
                     val episodeNumber = episodeNum.toFloatOrNull() ?: continue
 
                     val episodeData = episodes.getJSONObject(episodeNum)
+                    val seasonNumber = episodeData.optInt("seasonNumber", 1)
+                    val episodeInSeason = episodeData.optInt("episodeNumber", episodeNum.toIntOrNull() ?: 1)
 
                     episodeList.add(
                         SEpisode.create().apply {
                             episode_number = episodeNumber
 
-                            // Get episode title
                             val episodeTitle = episodeData.optJSONObject("title")?.let { titleObj ->
                                 titleObj.optString("en", "").takeIf { it.isNotEmpty() && it != "null" }
                                     ?: titleObj.optString("ja", "").takeIf { it.isNotEmpty() && it != "null" }
@@ -286,11 +288,11 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                             date_upload = episodeData.optString("airdate", "")
                                 .let { if (it.isNotBlank()) parseDate(it) else 0L }
 
-                            // Store all IDs
                             url = buildString {
+                                imdbId?.let { append("imdb:$it|season:$seasonNumber|") }
                                 malId?.let { append("mal:$it|") }
                                 kitsuId?.let { append("kitsu:$it|") }
-                                append("anilist:$anilistId|ep:$episodeNum")
+                                append("anilist:$anilistId|ep:$episodeNum|epInSeason:$episodeInSeason")
                             }
                         },
                     )
@@ -310,8 +312,8 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                         name = "Movie"
                         date_upload = dateUpload
 
-                        // Store all IDs for movie
                         url = buildString {
+                            imdbId?.let { append("imdb:$it|") }
                             malId?.let { append("mal:$it|") }
                             kitsuId?.let { append("kitsu:$it|") }
                             append("anilist:$anilistId|ep:movie")
@@ -335,7 +337,6 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val config = AIOStreamsConfig.fromManifestUrl(manifestUrl)
             ?: throw Exception("Invalid manifest URL. Please check settings.")
 
-        // Parse episode URL
         val parts = episode.url.split("|").associate {
             val split = it.split(":", limit = 2)
             split[0] to split[1]
@@ -343,21 +344,19 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
         val episodeNum = parts["ep"] ?: throw Exception("Missing episode number")
 
-        val animeId = when {
-            parts.containsKey("mal") -> "mal:${parts["mal"]}"
-            parts.containsKey("kitsu") -> "kitsu:${parts["kitsu"]}"
-            parts.containsKey("anilist") -> "anilist:${parts["anilist"]}"
+        val (streamType, animeId) = when {
+            parts.containsKey("imdb") -> {
+                val season = parts["season"] ?: "1"
+                val epInSeason = parts["epInSeason"] ?: episodeNum
+                "series" to "${parts["imdb"]}:$season:$epInSeason"
+            }
+            parts.containsKey("mal") -> "anime" to "mal:${parts["mal"]}:$episodeNum"
+            parts.containsKey("kitsu") -> "anime" to "kitsu:${parts["kitsu"]}:$episodeNum"
+            parts.containsKey("anilist") -> "anime" to "anilist:${parts["anilist"]}:$episodeNum"
             else -> throw Exception("No anime ID found")
         }
 
-        // Handle movies
-        val streamId = if (episodeNum == "movie") {
-            animeId
-        } else {
-            "$animeId:$episodeNum"
-        }
-
-        return GET(config.buildStreamUrl("anime", streamId))
+        return GET(config.buildStreamUrl(streamType, animeId))
     }
 
     override fun videoListParse(response: Response): List<Video> {
@@ -381,14 +380,45 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             val isStatistic = stream.optJSONObject("streamData")?.optString("type") == "statistic"
             if (isStatistic) continue
 
-            // Skip streams without URL
-            val url = stream.optString("url", "")
-            if (url.isEmpty()) continue
-
             val name = stream.optString("name", "Unknown Quality")
             val description = stream.optString("description", "")
 
-            // Quality label
+            // Check if this is a P2P/torrent stream with infoHash
+            val isP2PStream = stream.has("infoHash")
+            
+            // Skip P2P streams if the preference is disabled
+            if (isP2PStream && !preferences.getBoolean(PREF_SHOW_P2P, PREF_SHOW_P2P_DEFAULT)) {
+                continue
+            }
+
+            val url = if (isP2PStream) {
+                // build magnet link
+                val infoHash = stream.getString("infoHash")
+                val fileIdx = stream.optInt("fileIdx", 0)
+            
+                val trackers = if (stream.has("sources")) {
+                    val sources = stream.getJSONArray("sources")
+                    buildList {
+                        for (j in 0 until sources.length()) {
+                            val source = sources.getString(j)
+                            if (source.startsWith("tracker:")) {
+                                add(source.substring(8)) // Remove "tracker:" prefix
+                            }
+                        }
+                    }
+                } else {
+                    // Default anime trackers
+                    getDefaultAnimeTrackers()
+                }
+                
+                buildMagnetLink(infoHash, fileIdx, trackers)
+            } else {
+                // normal debrid stream
+                val streamUrl = stream.optString("url", "")
+                if (streamUrl.isEmpty()) continue
+                streamUrl
+            }
+
             val quality = if (description.isNotEmpty()) {
                 "$name\n$description"
             } else {
@@ -409,6 +439,29 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         }
 
         return videoList
+    }
+
+    private fun buildMagnetLink(infoHash: String, fileIdx: Int, trackers: List<String>): String {
+        val trackerParams = trackers.joinToString("&tr=")
+        return "magnet:?xt=urn:btih:$infoHash&dn=$infoHash&tr=$trackerParams&index=$fileIdx"
+    }
+
+    private fun getDefaultAnimeTrackers(): List<String> {
+        return listOf(
+            "udp://tracker.opentrackr.org:1337/announce",
+            "udp://open.demonoid.ch:6969/announce",
+            "udp://open.demonii.com:1337/announce",
+            "udp://open.stealth.si:80/announce",
+            "udp://tracker.torrent.eu.org:451/announce",
+            "udp://explodie.org:6969/announce",
+            "udp://exodus.desync.com:6969/announce",
+            "http://nyaa.tracker.wf:7777/announce",
+            "http://anidex.moe:6969/announce",
+            "http://tracker.anirena.com:80/announce",
+            "udp://tracker.uw0.xyz:6969/announce",
+            "http://share.camoe.cn:8080/announce",
+            "http://t.nyaatracker.com:80/announce",
+        )
     }
 
     // ============================== Settings ==============================
@@ -437,6 +490,25 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                     ).show()
                 }
                 isValid
+            }
+        }.also(screen::addPreference)
+
+        SwitchPreferenceCompat(screen.context).apply {
+            key = PREF_SHOW_P2P
+            title = "Show P2P/Torrent Streams"
+            summary = "Enable this ONLY if using Aniyomi forks that support P2P streaming (e.g., Anikku, Kuukiyomi). Regular Aniyomi does NOT support magnet links."
+            setDefaultValue(PREF_SHOW_P2P_DEFAULT)
+            
+            setOnPreferenceChangeListener { _, newValue ->
+                val enabled = newValue as Boolean
+                if (enabled) {
+                    android.widget.Toast.makeText(
+                        screen.context,
+                        "⚠️ P2P streams require Aniyomi forks like Anikku or Kuukiyomi!",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+                true
             }
         }.also(screen::addPreference)
     }
@@ -480,5 +552,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
     companion object {
         private const val PREF_MANIFEST_URL = "manifest_url"
+        private const val PREF_SHOW_P2P = "show_p2p_streams"
+        private const val PREF_SHOW_P2P_DEFAULT = false
     }
 }

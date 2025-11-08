@@ -12,33 +12,32 @@ An **Aniyomi** extension that aggregates anime streams from multiple debrid serv
 6. Go to **Settings → Extensions → AIOStreams → Configure**
 7. Paste your manifest URL and save
 
+### Enable Seadex Integration (Required for Seadex)
+
+To use Seadex functionality, you **must** add this snippet to your AIOStreams formatter. It's recommended to place it at the bottom to minimize visual clutter:
+
+```
+{stream.infoHash::exists[" 🧩 {stream.infoHash}"||""]}
+```
+
+This displays the torrent info hash (prefixed with 🧩) which is required for Seadex to work properly.
+
 ## Public Instances
 
-A list of publicly available AIOStreams instances with at least some level of trustworthiness that allow **Torrentio**.  
-Use at your own risk.
+A list of publicly available AIOStreams instances with at least some level of trustworthiness that allow **Torrentio**. Use at your own risk.
 
 ### 🚀 Stable
-
 Receive updates later but are relatively bug-free.
 
-- **https://aiostreamsfortheweak.nhyira.dev**  
-  Hosted by **@nhyyeb**, AIOStreams Discord admin.
-
-- **https://aiostreams.12312023.xyz/**  
-  Hosted by **@a.ves**.
-
-- **https://aiostreams.stremiofr.com**  
-  Hosted by the **StremioFR** community.
+- **https://aiostreamsfortheweak.nhyira.dev** Hosted by **@nhyyeb**, AIOStreams Discord admin.
+- **https://aiostreams.12312023.xyz/** Hosted by **@a.ves**.
+- **https://aiostreams.stremiofr.com** Hosted by the **StremioFR** community.
 
 ### 🌙 Nightly
-
 Receive the latest updates early but with a slightly higher (yet still low) chance of encountering bugs.
 
-- **https://aiostreams.viren070.me**  
-  Hosted by **@viren_7**, the developer.
-
-- **https://aiostreams.midnightignite.me**  
-  Hosted by **@midnightignite**, TorBox community manager.
+- **https://aiostreams.viren070.me** Hosted by **@viren_7**, the developer.
+- **https://aiostreams.midnightignite.me** Hosted by **@midnightignite**, TorBox community manager.
 
 ## Building
 
@@ -72,9 +71,3 @@ Apache License 2.0
 If you enjoyed this addon and would like to support my work, consider buying me a coffee! ☕
 
 [![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/nourm)
-
----
-
-```
-
-```

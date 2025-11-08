@@ -16,6 +16,7 @@ An **Aniyomi** extension that aggregates anime streams from multiple debrid serv
 <summary><b>Enable Seadex Integration (Required for Seadex)</b></summary>
 
 > To use Seadex functionality, you **must** add this snippet to your AIOStreams formatter. It's recommended to place it at the bottom to minimize visual clutter:
+> [!NOTE]
 >
 > ```
 > {stream.infoHash::exists[" 🧩 {stream.infoHash}"||""]}

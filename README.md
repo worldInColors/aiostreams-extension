@@ -12,21 +12,25 @@ An **Aniyomi** extension that aggregates anime streams from multiple debrid serv
 6. Go to **Settings → Extensions → AIOStreams → Configure**
 7. Paste your manifest URL and save
 
-### Enable Seadex Integration (Required for Seadex)
+<details>
+<summary><b>Enable Seadex Integration (Required for Seadex)</b></summary>
 
-To use Seadex functionality, you **must** add this snippet to your AIOStreams formatter. It's recommended to place it at the bottom to minimize visual clutter:
+> To use Seadex functionality, you **must** add this snippet to your AIOStreams formatter. It's recommended to place it at the bottom to minimize visual clutter:
+>
+> ```
+> {stream.infoHash::exists[" 🧩 {stream.infoHash}"||""]}
+> ```
+>
+> This displays the torrent info hash (prefixed with 🧩) which is required for Seadex to work properly.
 
-```
-{stream.infoHash::exists[" 🧩 {stream.infoHash}"||""]}
-```
-
-This displays the torrent info hash (prefixed with 🧩) which is required for Seadex to work properly.
+</details>
 
 ## Public Instances
 
 A list of publicly available AIOStreams instances with at least some level of trustworthiness that allow **Torrentio**. Use at your own risk.
 
 ### 🚀 Stable
+
 Receive updates later but are relatively bug-free.
 
 - **https://aiostreamsfortheweak.nhyira.dev** Hosted by **@nhyyeb**, AIOStreams Discord admin.
@@ -34,6 +38,7 @@ Receive updates later but are relatively bug-free.
 - **https://aiostreams.stremiofr.com** Hosted by the **StremioFR** community.
 
 ### 🌙 Nightly
+
 Receive the latest updates early but with a slightly higher (yet still low) chance of encountering bugs.
 
 - **https://aiostreams.viren070.me** Hosted by **@viren_7**, the developer.

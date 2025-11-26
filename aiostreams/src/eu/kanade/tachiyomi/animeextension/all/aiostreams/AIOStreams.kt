@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.animeextension.all.aiostreams
 import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.EditTextPreference
+import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
@@ -350,121 +351,148 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         // Store AniList ID for SeaDex lookup
         currentAnilistId = parts["anilist"]?.toIntOrNull() ?: 0
 
-        val (streamType, animeId) = when {
-            parts.containsKey("imdb") -> {
-                val season = parts["season"] ?: "1"
-                val epInSeason = parts["epInSeason"] ?: episodeNum
-                "series" to "${parts["imdb"]}:$season:$epInSeason"
-            }
-            parts.containsKey("mal") -> "anime" to "mal:${parts["mal"]}:$episodeNum"
-            parts.containsKey("kitsu") -> "anime" to "kitsu:${parts["kitsu"]}:$episodeNum"
-            parts.containsKey("anilist") -> "anime" to "anilist:${parts["anilist"]}:$episodeNum"
-            else -> throw Exception("No anime ID found")
-        }
+        // Get user's ID priority preference
+        val idPriority = preferences.getString(PREF_ID_PRIORITY, PREF_ID_PRIORITY_DEFAULT)!!
+
+        val (streamType, animeId) = selectIdByPriority(parts, episodeNum, idPriority)
 
         return GET(config.buildStreamUrl(streamType, animeId))
     }
 
-override fun videoListParse(response: Response): List<Video> {
-    val json = JSONObject(response.body.string())
+    private fun selectIdByPriority(parts: Map<String, String>, episodeNum: String, priority: String): Pair<String, String> {
+        // Parse the comma-separated priority string (e.g., "kitsu,mal,imdb,anilist")
+        val priorityOrder = priority.split(",").map { it.trim() }
 
-    if (json.has("error")) {
-        throw Exception("AIOStreams error: ${json.optString("error", "Unknown error")}")
-    }
-
-    if (!json.has("streams")) {
-        throw Exception("No streams available for this episode")
-    }
-
-    val streams = json.getJSONArray("streams")
-    
-    // Fetch SeaDex best releases if enabled
-    val bestHashes = if (preferences.getBoolean(PREF_SEADEX_HIGHLIGHT, PREF_SEADEX_HIGHLIGHT_DEFAULT) && currentAnilistId > 0) {
-        try {
-            SeaDexApi.getBestInfoHashesForAnime(client, currentAnilistId)
-        } catch (e: Exception) {
-            emptySet<String>()
-        }
-    } else {
-        emptySet<String>()
-    }
-    
-    val videoList = mutableListOf<Pair<Video, Int>>()
-
-    for (i in 0 until streams.length()) {
-        val stream = streams.getJSONObject(i)
-
-        val isStatistic = stream.optJSONObject("streamData")?.optString("type") == "statistic"
-        if (isStatistic) continue
-
-        val name = stream.optString("name", "Unknown Quality")
-        val description = stream.optString("description", "")
-
-        val infoHash = SeaDexApi.extractInfoHash(description)
-        
-        val isBest = infoHash != null && bestHashes.contains(infoHash)
-        val priority = if (isBest) 0 else 1
-
-        val isP2PStream = stream.has("infoHash")
-        
-        if (isP2PStream && !preferences.getBoolean(PREF_SHOW_P2P, PREF_SHOW_P2P_DEFAULT)) {
-            continue
-        }
-
-        val url = if (isP2PStream) {
-            val jsonInfoHash = stream.getString("infoHash")
-            val fileIdx = stream.optInt("fileIdx", 0)
-        
-            val trackers = if (stream.has("sources")) {
-                val sources = stream.getJSONArray("sources")
-                buildList {
-                    for (j in 0 until sources.length()) {
-                        val source = sources.getString(j)
-                        if (source.startsWith("tracker:")) {
-                            add(source.substring(8))
-                        }
+        for (idType in priorityOrder) {
+            when (idType) {
+                "imdb" -> {
+                    if (parts.containsKey("imdb")) {
+                        val season = parts["season"] ?: "1"
+                        val epInSeason = parts["epInSeason"] ?: episodeNum
+                        return "series" to "${parts["imdb"]}:$season:$epInSeason"
                     }
                 }
-            } else {
-                getDefaultAnimeTrackers()
+                "mal" -> {
+                    if (parts.containsKey("mal")) {
+                        return "anime" to "mal:${parts["mal"]}:$episodeNum"
+                    }
+                }
+                "kitsu" -> {
+                    if (parts.containsKey("kitsu")) {
+                        return "anime" to "kitsu:${parts["kitsu"]}:$episodeNum"
+                    }
+                }
+                "anilist" -> {
+                    if (parts.containsKey("anilist")) {
+                        return "anime" to "anilist:${parts["anilist"]}:$episodeNum"
+                    }
+                }
             }
-            
-            buildMagnetLink(jsonInfoHash, fileIdx, trackers)
-        } else {
-            val streamUrl = stream.optString("url", "")
-            if (streamUrl.isEmpty()) continue
-            streamUrl
         }
 
-        val finalName = if (isBest) "⭐ $name" else name
+        throw Exception("No anime ID found")
+    }
 
-        val quality = if (description.isNotEmpty()) {
-            "$finalName\n$description"
-        } else {
-            finalName
+    override fun videoListParse(response: Response): List<Video> {
+        val json = JSONObject(response.body.string())
+
+        if (json.has("error")) {
+            throw Exception("AIOStreams error: ${json.optString("error", "Unknown error")}")
         }
 
-        val video = Video(
-            url = url,
-            quality = quality,
-            videoUrl = url,
-        )
+        if (!json.has("streams")) {
+            throw Exception("No streams available for this episode")
+        }
+
+        val streams = json.getJSONArray("streams")
         
-        videoList.add(video to priority)
-    }
+        // Fetch SeaDex best releases if enabled
+        val bestHashes = if (preferences.getBoolean(PREF_SEADEX_HIGHLIGHT, PREF_SEADEX_HIGHLIGHT_DEFAULT) && currentAnilistId > 0) {
+            try {
+                SeaDexApi.getBestInfoHashesForAnime(client, currentAnilistId)
+            } catch (e: Exception) {
+                emptySet<String>()
+            }
+        } else {
+            emptySet<String>()
+        }
+        
+        val videoList = mutableListOf<Pair<Video, Int>>()
 
-    if (videoList.isEmpty()) {
-        throw Exception("No playable streams found")
+        for (i in 0 until streams.length()) {
+            val stream = streams.getJSONObject(i)
+
+            val isStatistic = stream.optJSONObject("streamData")?.optString("type") == "statistic"
+            if (isStatistic) continue
+
+            val name = stream.optString("name", "Unknown Quality")
+            val description = stream.optString("description", "")
+
+            val infoHash = SeaDexApi.extractInfoHash(description)
+            
+            val isBest = infoHash != null && bestHashes.contains(infoHash)
+            val priority = if (isBest) 0 else 1
+
+            val isP2PStream = stream.has("infoHash")
+            
+            if (isP2PStream && !preferences.getBoolean(PREF_SHOW_P2P, PREF_SHOW_P2P_DEFAULT)) {
+                continue
+            }
+
+            val url = if (isP2PStream) {
+                val jsonInfoHash = stream.getString("infoHash")
+                val fileIdx = stream.optInt("fileIdx", 0)
+            
+                val trackers = if (stream.has("sources")) {
+                    val sources = stream.getJSONArray("sources")
+                    buildList {
+                        for (j in 0 until sources.length()) {
+                            val source = sources.getString(j)
+                            if (source.startsWith("tracker:")) {
+                                add(source.substring(8))
+                            }
+                        }
+                    }
+                } else {
+                    getDefaultAnimeTrackers()
+                }
+                
+                buildMagnetLink(jsonInfoHash, fileIdx, trackers)
+            } else {
+                val streamUrl = stream.optString("url", "")
+                if (streamUrl.isEmpty()) continue
+                streamUrl
+            }
+
+            val finalName = if (isBest) "⭐ $name" else name
+
+            val quality = if (description.isNotEmpty()) {
+                "$finalName\n$description"
+            } else {
+                finalName
+            }
+
+            val video = Video(
+                url = url,
+                quality = quality,
+                videoUrl = url,
+            )
+            
+            videoList.add(video to priority)
+        }
+
+        if (videoList.isEmpty()) {
+            throw Exception("No playable streams found")
+        }
+        
+        val sortedList = if (preferences.getBoolean(PREF_SEADEX_SORT, PREF_SEADEX_SORT_DEFAULT)) {
+            videoList.sortedBy { it.second }.map { it.first }
+        } else {
+            videoList.map { it.first }
+        }
+        
+        return sortedList
     }
-    
-    val sortedList = if (preferences.getBoolean(PREF_SEADEX_SORT, PREF_SEADEX_SORT_DEFAULT)) {
-        videoList.sortedBy { it.second }.map { it.first }
-    } else {
-        videoList.map { it.first }
-    }
-    
-    return sortedList
-}
 
     private fun buildMagnetLink(infoHash: String, fileIdx: Int, trackers: List<String>): String {
         val trackerParams = trackers.joinToString("&tr=")
@@ -516,6 +544,35 @@ override fun videoListParse(response: Response): List<Video> {
                 }
                 isValid
             }
+        }.also(screen::addPreference)
+
+        ListPreference(screen.context).apply {
+            key = PREF_ID_PRIORITY
+            title = "ID Priority"
+            summary = "Choose which ID type to prioritize when making stream requests. The extension will try other IDs if the first one isn't available."
+            entries = arrayOf(
+                "Kitsu → IMDB → MAL → AniList",
+                "MAL → Kitsu → IMDB → AniList",
+                "Kitsu → MAL → IMDB → AniList",
+                "MAL → IMDB → Kitsu → AniList",
+                "IMDB → MAL → Kitsu → AniList",
+                "IMDB → Kitsu → MAL → AniList",
+                "IMDB → AniList → MAL → Kitsu",
+                "AniList → Kitsu → MAL → IMDB",
+                "AniList → MAL → Kitsu → IMDB"
+            )
+            entryValues = arrayOf(
+                "kitsu,imdb,mal,anilist",
+                "mal,kitsu,imdb,anilist",
+                "kitsu,mal,imdb,anilist",
+                "mal,imdb,kitsu,anilist",
+                "imdb,mal,kitsu,anilist",
+                "imdb,kitsu,mal,anilist",
+                "imdb,anilist,mal,kitsu",
+                "anilist,kitsu,mal,imdb",
+                "anilist,mal,kitsu,imdb"
+            )
+            setDefaultValue(PREF_ID_PRIORITY_DEFAULT)
         }.also(screen::addPreference)
 
         SwitchPreferenceCompat(screen.context).apply {
@@ -603,6 +660,8 @@ override fun videoListParse(response: Response): List<Video> {
 
     companion object {
         private const val PREF_MANIFEST_URL = "manifest_url"
+        private const val PREF_ID_PRIORITY = "id_priority"
+        private const val PREF_ID_PRIORITY_DEFAULT = "kitsu,imdb,mal,anilist"
         private const val PREF_SHOW_P2P = "show_p2p_streams"
         private const val PREF_SHOW_P2P_DEFAULT = false
         private const val PREF_SEADEX_HIGHLIGHT = "seadex_highlight"

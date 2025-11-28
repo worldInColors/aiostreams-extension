@@ -57,32 +57,10 @@ jobs:
           mv repo/apk/*.apk "repo/apk/${APK_NAME}"
 
           # The source ID is generated from package name + source name
-          # This ID was calculated using the same algorithm Aniyomi uses
-          # You can get this by installing the extension and checking the source info
           SOURCE_ID="8052283430657837092"
 
-          # Generate index.min.json
-          cat > repo/index.min.json << EOF
-          [
-            {
-              "name": "Aniyomi: AIOStreams",
-              "pkg": "eu.kanade.tachiyomi.animeextension.all.aiostreams",
-              "apk": "${APK_NAME}",
-              "lang": "all",
-              "code": ${VERSION_CODE},
-              "version": "${VERSION}",
-              "nsfw": 0,
-              "sources": [
-                {
-                  "name": "AIOStreams",
-                  "lang": "all",
-                  "id": ${SOURCE_ID},
-                  "baseUrl": "https://graphql.anilist.co"
-                }
-              ]
-            }
-          ]
-          EOF
+          # Generate index.min.json 
+          echo '[{"name":"Aniyomi: AIOStreams","pkg":"eu.kanade.tachiyomi.animeextension.all.aiostreams","apk":"'"${APK_NAME}"'","lang":"all","code":'"${VERSION_CODE}"',"version":"'"${VERSION}"'","nsfw":0,"sources":[{"name":"AIOStreams","lang":"all","id":'"${SOURCE_ID}"',"baseUrl":"https://graphql.anilist.co"}]}]' > repo/index.min.json
 
       - name: Deploy to repo branch
         uses: peaceiris/actions-gh-pages@v3

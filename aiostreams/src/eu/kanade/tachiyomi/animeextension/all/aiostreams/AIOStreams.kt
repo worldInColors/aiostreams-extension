@@ -15,7 +15,9 @@ import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
+import okhttp3.Credentials
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -62,7 +64,6 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         """.trimIndent()
 
         val variables = """{"page": $page, "perPage": 20}"""
-
         val payload = """{"query": ${JSONObject.quote(query)}, "variables": $variables}"""
 
         return POST(
@@ -135,7 +136,6 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         """.trimIndent()
 
         val variables = """{"page": $page, "search": ${JSONObject.quote(query)}}"""
-
         val payload = """{"query": ${JSONObject.quote(graphQLQuery)}, "variables": $variables}"""
 
         return POST(
@@ -168,7 +168,6 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         }
 
         val media = json.getJSONObject("data").getJSONObject("Media")
-
         val title = media.getJSONObject("title")
 
         return SAnime.create().apply {
@@ -224,7 +223,6 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         """.trimIndent()
 
         val variables = """{"id": ${anime.url}}"""
-
         val payload = """{"query": ${JSONObject.quote(query)}, "variables": $variables}"""
 
         return POST(
@@ -242,7 +240,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
     override fun episodeListParse(response: Response): List<SEpisode> {
         if (!response.isSuccessful) {
-            throw Exception("Failed to fetch episodes from ani.zip: ${response.code} - This anime may not be in the database")
+            throw Exception("Failed to fetch episodes: ${response.code}")
         }
 
         val json = JSONObject(response.body.string())
@@ -253,6 +251,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val malId = mappings.optInt("mal_id", -1).takeIf { it != -1 }
         val kitsuId = mappings.optInt("kitsu_id", -1).takeIf { it != -1 }
         val imdbId = mappings.optString("imdb_id", "").takeIf { it.isNotEmpty() }
+        val tmdbId = mappings.optString("themoviedb_id", "").takeIf { it.isNotEmpty() }
 
         return when (type) {
             "TV", "ONA", "OVA" -> {
@@ -261,260 +260,220 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                 val keys = episodes.keys()
 
                 while (keys.hasNext()) {
-                    val episodeNum = keys.next()
-
-                    // Skip specials/OVAs (e.g., "S1", "S2", "O1"): only process numeric episodes
-                    val episodeNumber = episodeNum.toFloatOrNull() ?: continue
-
-                    val episodeData = episodes.getJSONObject(episodeNum)
+                    val episodeNumKey = keys.next()
+                    val episodeNumber = episodeNumKey.toFloatOrNull() ?: continue
+                    val episodeData = episodes.getJSONObject(episodeNumKey)
                     val seasonNumber = episodeData.optInt("seasonNumber", 1)
-                    val episodeInSeason = episodeData.optInt("episodeNumber", episodeNum.toIntOrNull() ?: 1)
+                    val episodeInSeason = episodeData.optInt("episodeNumber", episodeNumKey.toIntOrNull() ?: 1)
 
                     episodeList.add(
                         SEpisode.create().apply {
                             episode_number = episodeNumber
-
-                            val episodeTitle = episodeData.optJSONObject("title")?.let { titleObj ->
-                                titleObj.optString("en", "").takeIf { it.isNotEmpty() && it != "null" }
-                                    ?: titleObj.optString("ja", "").takeIf { it.isNotEmpty() && it != "null" }
-                                    ?: titleObj.optString("x-jat", "").takeIf { it.isNotEmpty() && it != "null" }
-                            }
-
-                            name = if (!episodeTitle.isNullOrEmpty()) {
-                                "Episode $episodeNum: $episodeTitle"
-                            } else {
-                                "Episode $episodeNum"
-                            }
-
-                            date_upload = episodeData.optString("airdate", "")
-                                .let { if (it.isNotBlank()) parseDate(it) else 0L }
-
+                            val titleObj = episodeData.optJSONObject("title")
+                            val epTitle = titleObj?.optString("en", "") ?: ""
+                            name = if (epTitle.isNotBlank() && epTitle != "null") "Episode $episodeNumKey: $epTitle" else "Episode $episodeNumKey"
+                            date_upload = parseDate(episodeData.optString("airdate", ""))
+                            
                             url = buildString {
                                 imdbId?.let { append("imdb:$it|season:$seasonNumber|") }
+                                tmdbId?.let { append("tmdb:$it|season:$seasonNumber|") }
                                 malId?.let { append("mal:$it|") }
                                 kitsuId?.let { append("kitsu:$it|") }
-                                append("anilist:$anilistId|ep:$episodeNum|epInSeason:$episodeInSeason")
+                                append("anilist:$anilistId|ep:$episodeNumKey|epInSeason:$episodeInSeason")
                             }
-                        },
+                        }
                     )
                 }
-
                 episodeList.sortedBy { it.episode_number }.reversed()
             }
-
             "MOVIE" -> {
-                val episodes = json.optJSONObject("episodes")
-                val dateUpload = episodes?.optJSONObject("1")?.optString("airdate", "")
-                    ?.let { if (it.isNotBlank()) parseDate(it) else 0L } ?: 0L
-
+                val dateUpload = json.optJSONObject("episodes")?.optJSONObject("1")?.optString("airdate", "") ?: ""
                 listOf(
                     SEpisode.create().apply {
                         episode_number = 1.0F
                         name = "Movie"
-                        date_upload = dateUpload
-
+                        date_upload = parseDate(dateUpload)
                         url = buildString {
                             imdbId?.let { append("imdb:$it|") }
+                            tmdbId?.let { append("tmdb:$it|") }
                             malId?.let { append("mal:$it|") }
                             kitsuId?.let { append("kitsu:$it|") }
                             append("anilist:$anilistId|ep:movie")
                         }
-                    },
+                    }
                 )
             }
-
             else -> emptyList()
         }
     }
 
     // ============================ Video Links =============================
 
-    // Store current AniList ID for SeaDex lookup
     private var currentAnilistId: Int = 0
+    private var cachedConfig: AIOStreamsConfig? = null
 
     override fun videoListRequest(episode: SEpisode): Request {
         val manifestUrl = preferences.getString(PREF_MANIFEST_URL, null)
-        if (manifestUrl.isNullOrBlank()) {
-            throw Exception("Please configure AIOStreams manifest URL in settings")
-        }
+        if (manifestUrl.isNullOrBlank()) throw Exception("Please configure AIOStreams manifest URL")
 
-        val config = AIOStreamsConfig.fromManifestUrl(manifestUrl)
-            ?: throw Exception("Invalid manifest URL. Please check settings.")
+   
+        cachedConfig = AIOStreamsConfig.fromManifestUrl(manifestUrl)
+            ?: throw Exception("Invalid manifest URL format")
 
         val parts = episode.url.split("|").associate {
             val split = it.split(":", limit = 2)
             split[0] to split[1]
         }
 
-        val episodeNum = parts["ep"] ?: throw Exception("Missing episode number")
-
-        // Store AniList ID for SeaDex lookup
+        val episodeNum = parts["ep"] ?: "1"
+        val isMovie = episodeNum == "movie" || episodeNum == "0"
         currentAnilistId = parts["anilist"]?.toIntOrNull() ?: 0
 
-        // Get user's ID priority preference
+ 
         val idPriority = preferences.getString(PREF_ID_PRIORITY, PREF_ID_PRIORITY_DEFAULT)!!
+        val (searchId, type) = selectIdForApi(parts, idPriority, isMovie, episodeNum)
 
-        val (streamType, animeId) = selectIdByPriority(parts, episodeNum, idPriority)
+   
+        val apiUrl = "${cachedConfig!!.baseUrl}/api/v1/search".toHttpUrl().newBuilder()
+            .addQueryParameter("type", type)
+            .addQueryParameter("id", searchId)
+            .addQueryParameter("format", "true") 
+            .addQueryParameter("requiredFields", "infoHash")
+            .build()
 
-        return GET(config.buildStreamUrl(streamType, animeId))
+        val credential = Credentials.basic(cachedConfig!!.uuid, cachedConfig!!.encryptedBlob)
+
+        return GET(
+            apiUrl.toString(),
+            headers = Headers.headersOf("Authorization", credential)
+        )
     }
 
-    private fun selectIdByPriority(parts: Map<String, String>, episodeNum: String, priority: String): Pair<String, String> {
-        // Parse the comma-separated priority string (e.g., "kitsu,mal,imdb,anilist")
+    private fun selectIdForApi(parts: Map<String, String>, priority: String, isMovie: Boolean, episodeNum: String): Pair<String, String> {
         val priorityOrder = priority.split(",").map { it.trim() }
+        val type = if (isMovie) "movie" else "series"
 
         for (idType in priorityOrder) {
             when (idType) {
-                "imdb" -> {
-                    if (parts.containsKey("imdb")) {
-                        val season = parts["season"] ?: "1"
-                        val epInSeason = parts["epInSeason"] ?: episodeNum
-                        return "series" to "${parts["imdb"]}:$season:$epInSeason"
-                    }
+                "imdb" -> if (parts.containsKey("imdb")) {
+                    val id = parts["imdb"]!!
+                    val finalId = if (isMovie) id else "$id:${parts["season"]}:${parts["epInSeason"]}"
+                    return finalId to type
                 }
-                "mal" -> {
-                    if (parts.containsKey("mal")) {
-                        return "anime" to "mal:${parts["mal"]}:$episodeNum"
-                    }
+                "tmdb" -> if (parts.containsKey("tmdb")) {
+                    val id = "tmdb:${parts["tmdb"]}"
+                    val finalId = if (isMovie) id else "$id:${parts["season"]}:${parts["epInSeason"]}"
+                    return finalId to type
                 }
-                "kitsu" -> {
-                    if (parts.containsKey("kitsu")) {
-                        return "anime" to "kitsu:${parts["kitsu"]}:$episodeNum"
-                    }
+                "kitsu" -> if (parts.containsKey("kitsu")) {
+                    val id = "kitsu:${parts["kitsu"]}"
+                    val finalId = if (isMovie) id else "$id:${parts["epInSeason"]}" 
+                    return finalId to type
                 }
-                "anilist" -> {
-                    if (parts.containsKey("anilist")) {
-                        return "anime" to "anilist:${parts["anilist"]}:$episodeNum"
-                    }
+                "anilist" -> if (parts.containsKey("anilist")) {
+                    val id = "anilist:${parts["anilist"]}"
+                    val finalId = if (isMovie) id else "$id:${parts["season"]}:${parts["epInSeason"]}"
+                    return finalId to type
+                }
+                "mal" -> if (parts.containsKey("mal")) {
+                    val id = "mal:${parts["mal"]}"
+                    val finalId = if (isMovie) id else "$id:$episodeNum"
+                    return finalId to type
                 }
             }
         }
-
-        throw Exception("No anime ID found")
+        if (parts.containsKey("imdb")) return selectIdForApi(parts, "imdb", isMovie, episodeNum)
+        throw Exception("No valid ID found")
     }
 
     override fun videoListParse(response: Response): List<Video> {
         val json = JSONObject(response.body.string())
-
-        if (json.has("error")) {
-            throw Exception("AIOStreams error: ${json.optString("error", "Unknown error")}")
-        }
-
-        if (!json.has("streams")) {
-            throw Exception("No streams available for this episode")
-        }
-
-        val streams = json.getJSONArray("streams")
+        val data = json.optJSONObject("data") ?: throw Exception("API returned no data")
+        val results = data.optJSONArray("results")
         
-        // Fetch SeaDex best releases if enabled
+        if (results == null || results.length() == 0) throw Exception("No streams found")
+
         val bestHashes = if (preferences.getBoolean(PREF_SEADEX_HIGHLIGHT, PREF_SEADEX_HIGHLIGHT_DEFAULT) && currentAnilistId > 0) {
-            try {
-                SeaDexApi.getBestInfoHashesForAnime(client, currentAnilistId)
-            } catch (e: Exception) {
-                emptySet<String>()
-            }
-        } else {
-            emptySet<String>()
-        }
+            try { SeaDexApi.getBestInfoHashesForAnime(client, currentAnilistId) } 
+            catch (e: Exception) { emptySet() }
+        } else { emptySet() }
         
+        val showP2P = preferences.getBoolean(PREF_SHOW_P2P, PREF_SHOW_P2P_DEFAULT)
         val videoList = mutableListOf<Pair<Video, Int>>()
 
-        for (i in 0 until streams.length()) {
-            val stream = streams.getJSONObject(i)
+     
+        val playbackHeaders = if (cachedConfig != null) {
+            Headers.headersOf("Authorization", Credentials.basic(cachedConfig!!.uuid, cachedConfig!!.encryptedBlob))
+        } else null
 
-            val isStatistic = stream.optJSONObject("streamData")?.optString("type") == "statistic"
-            if (isStatistic) continue
-
-            val name = stream.optString("name", "Unknown Quality")
-            val description = stream.optString("description", "")
-
-            val infoHash = SeaDexApi.extractInfoHash(description)
+        for (i in 0 until results.length()) {
+            val result = results.getJSONObject(i)
             
-            val isBest = infoHash != null && bestHashes.contains(infoHash)
+            val infoHash = result.optString("infoHash", "").lowercase()
+            if (infoHash.isEmpty() || infoHash == "<redacted>") continue
+            
+           
+            val name = result.optString("name", "Stream")
+            val description = result.optString("description", "")
+            val streamUrl = result.optString("url", "")
+            
+            val isMagnet = streamUrl.startsWith("magnet:")
+            if (isMagnet && !showP2P) continue
+            
+            val isBest = bestHashes.contains(infoHash)
             val priority = if (isBest) 0 else 1
 
-            val isP2PStream = stream.has("infoHash")
-            
-            if (isP2PStream && !preferences.getBoolean(PREF_SHOW_P2P, PREF_SHOW_P2P_DEFAULT)) {
-                continue
-            }
+            val displayName = if (isBest) "⭐ $name" else name
+            val displayInfo = if (description.isNotEmpty()) "$displayName\n$description" else displayName
 
-            val url = if (isP2PStream) {
-                val jsonInfoHash = stream.getString("infoHash")
-                val fileIdx = stream.optInt("fileIdx", 0)
-            
-                val trackers = if (stream.has("sources")) {
-                    val sources = stream.getJSONArray("sources")
-                    buildList {
-                        for (j in 0 until sources.length()) {
-                            val source = sources.getString(j)
-                            if (source.startsWith("tracker:")) {
-                                add(source.substring(8))
-                            }
-                        }
-                    }
-                } else {
-                    getDefaultAnimeTrackers()
-                }
-                
-                buildMagnetLink(jsonInfoHash, fileIdx, trackers)
-            } else {
-                val streamUrl = stream.optString("url", "")
-                if (streamUrl.isEmpty()) continue
+            val finalUrl = if (!isMagnet && streamUrl.isNotEmpty()) {
                 streamUrl
-            }
-
-            val finalName = if (isBest) "⭐ $name" else name
-
-            val quality = if (description.isNotEmpty()) {
-                "$finalName\n$description"
             } else {
-                finalName
+                val trackers = getDefaultAnimeTrackers().joinToString("&tr=")
+                "magnet:?xt=urn:btih:$infoHash&dn=$infoHash&tr=$trackers"
             }
 
-            val video = Video(
-                url = url,
-                quality = quality,
-                videoUrl = url,
-            )
-            
-            videoList.add(video to priority)
+            val videoHeaders = if (!isMagnet) playbackHeaders else null
+
+            videoList.add(Video(finalUrl, displayInfo, finalUrl, headers = videoHeaders) to priority)
         }
 
-        if (videoList.isEmpty()) {
-            throw Exception("No playable streams found")
-        }
-        
-        val sortedList = if (preferences.getBoolean(PREF_SEADEX_SORT, PREF_SEADEX_SORT_DEFAULT)) {
+        return if (preferences.getBoolean(PREF_SEADEX_SORT, PREF_SEADEX_SORT_DEFAULT)) {
             videoList.sortedBy { it.second }.map { it.first }
         } else {
             videoList.map { it.first }
         }
-        
-        return sortedList
     }
 
-    private fun buildMagnetLink(infoHash: String, fileIdx: Int, trackers: List<String>): String {
-        val trackerParams = trackers.joinToString("&tr=")
-        return "magnet:?xt=urn:btih:$infoHash&dn=$infoHash&tr=$trackerParams&index=$fileIdx"
+    private fun getDefaultAnimeTrackers(): List<String> = listOf(
+        "udp://tracker.opentrackr.org:1337/announce",
+        "http://nyaa.tracker.wf:7777/announce",
+        "udp://open.demonii.com:1337/announce",
+        "udp://tracker.torrent.eu.org:451/announce"
+    )
+
+    private fun parseDate(dateStr: String): Long {
+        return try { SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(dateStr)?.time ?: 0L } catch (e: Exception) { 0L }
     }
 
-    private fun getDefaultAnimeTrackers(): List<String> {
-        return listOf(
-            "udp://tracker.opentrackr.org:1337/announce",
-            "udp://open.demonoid.ch:6969/announce",
-            "udp://open.demonii.com:1337/announce",
-            "udp://open.stealth.si:80/announce",
-            "udp://tracker.torrent.eu.org:451/announce",
-            "udp://explodie.org:6969/announce",
-            "udp://exodus.desync.com:6969/announce",
-            "http://nyaa.tracker.wf:7777/announce",
-            "http://anidex.moe:6969/announce",
-            "http://tracker.anirena.com:80/announce",
-            "udp://tracker.uw0.xyz:6969/announce",
-            "http://share.camoe.cn:8080/announce",
-            "http://t.nyaatracker.com:80/announce",
-        )
+    // ============================= Config Class ===========================
+
+    data class AIOStreamsConfig(
+        val baseUrl: String,
+        val uuid: String,
+        val encryptedBlob: String,
+    ) {
+        companion object {
+            fun fromManifestUrl(url: String): AIOStreamsConfig? {
+                val regex = Regex("(https?://[^/]+)/stremio/([^/]+)/([^/]+)/manifest\\.json")
+                val match = regex.find(url) ?: return null
+                return AIOStreamsConfig(
+                    baseUrl = match.groupValues[1],
+                    uuid = match.groupValues[2],
+                    encryptedBlob = match.groupValues[3]
+                )
+            }
+        }
     }
 
     // ============================== Settings ==============================
@@ -523,33 +482,16 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         EditTextPreference(screen.context).apply {
             key = PREF_MANIFEST_URL
             title = "AIOStreams Manifest URL"
-            summary = "Get from https://aiostreamsfortheweak.nhyira.dev/stremio/configure or any other AIOStreams instance"
-            dialogTitle = "AIOStreams Setup"
-            dialogMessage = """
-                1. Visit https://aiostreamsfortheweak.nhyira.dev/stremio/configure
-                2. Add your debrid services (TorBox, RealDebrid, etc.)
-                3. Enable anime addons (Comet, MediaFusion, etc.)
-                4. Click "Create" and copy the manifest URL
-                5. Paste here
-            """.trimIndent()
-
-            setOnPreferenceChangeListener { _, newValue ->
-                val isValid = AIOStreamsConfig.fromManifestUrl(newValue as String) != null
-                if (!isValid) {
-                    android.widget.Toast.makeText(
-                        screen.context,
-                        "Invalid manifest URL format",
-                        android.widget.Toast.LENGTH_LONG,
-                    ).show()
-                }
-                isValid
+            summary = "Get from https://aiostreamsfortheweak.nhyira.dev/stremio/configure or any other public fork"
+            setOnPreferenceChangeListener { _, newValue -> 
+                AIOStreamsConfig.fromManifestUrl(newValue as String) != null 
             }
         }.also(screen::addPreference)
 
         ListPreference(screen.context).apply {
             key = PREF_ID_PRIORITY
             title = "ID Priority"
-            summary = "Choose which ID type to prioritize when making stream requests. The extension will try other IDs if the first one isn't available."
+            summary = "Choose which ID type to prioritize."
             entries = arrayOf(
                 "Kitsu → IMDB → MAL → AniList",
                 "MAL → Kitsu → IMDB → AniList",
@@ -578,85 +520,22 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         SwitchPreferenceCompat(screen.context).apply {
             key = PREF_SHOW_P2P
             title = "Show P2P/Torrent Streams"
-            summary = "Enable this ONLY if using Aniyomi forks that support P2P streaming (e.g., Anikku, Kuukiyomi). Regular Aniyomi does NOT support magnet links."
+            summary = "Enable only if using Anikku. Disable for Debrid only."
             setDefaultValue(PREF_SHOW_P2P_DEFAULT)
-            
-            setOnPreferenceChangeListener { _, newValue ->
-                val enabled = newValue as Boolean
-                if (enabled) {
-                    android.widget.Toast.makeText(
-                        screen.context,
-                        "⚠️ P2P streams require Aniyomi forks like Anikku or Kuukiyomi!",
-                        android.widget.Toast.LENGTH_LONG,
-                    ).show()
-                }
-                true
-            }
         }.also(screen::addPreference)
 
         SwitchPreferenceCompat(screen.context).apply {
             key = PREF_SEADEX_HIGHLIGHT
             title = "Highlight SeaDex Best Releases"
-            summary = "Show ⭐ for torrents marked as 'best' by SeaDex (anime quality database)"
             setDefaultValue(PREF_SEADEX_HIGHLIGHT_DEFAULT)
-            
-            setOnPreferenceChangeListener { _, newValue ->
-                val enabled = newValue as Boolean
-                if (enabled) {
-                    android.widget.Toast.makeText(
-                        screen.context,
-                        "Read the README for info on how to set this up",
-                        android.widget.Toast.LENGTH_LONG,
-                    ).show()
-                }
-                true
-            }
         }.also(screen::addPreference)
-
+        
         SwitchPreferenceCompat(screen.context).apply {
             key = PREF_SEADEX_SORT
             title = "Move SeaDex Best to Top"
-            summary = "Move SeaDex best releases to the top of the stream list (requires 'Highlight SeaDex Best Releases' to be enabled)"
             setDefaultValue(PREF_SEADEX_SORT_DEFAULT)
         }.also(screen::addPreference)
     }
-
-    // =============================== Helpers ==============================
-
-    private fun parseDate(dateStr: String): Long {
-        return try {
-            SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(dateStr)?.time ?: 0L
-        } catch (e: Exception) {
-            0L
-        }
-    }
-
-    // ============================= Config Class ===========================
-
-    data class AIOStreamsConfig(
-        val baseUrl: String,
-        val userId: String,
-        val encryptedConfig: String,
-    ) {
-        companion object {
-            fun fromManifestUrl(url: String): AIOStreamsConfig? {
-                val regex = Regex("(https://[^/]+)/stremio/([^/]+)/([^/]+)/manifest\\.json")
-                val match = regex.find(url) ?: return null
-
-                return AIOStreamsConfig(
-                    baseUrl = match.groupValues[1],
-                    userId = match.groupValues[2],
-                    encryptedConfig = match.groupValues[3],
-                )
-            }
-        }
-
-        fun buildStreamUrl(type: String, id: String): String {
-            return "$baseUrl/stremio/$userId/$encryptedConfig/stream/$type/$id.json"
-        }
-    }
-
-    // ============================== Constants =============================
 
     companion object {
         private const val PREF_MANIFEST_URL = "manifest_url"

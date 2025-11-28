@@ -12,19 +12,6 @@ An **Aniyomi** extension that aggregates anime streams from multiple debrid serv
 6. Go to **Settings → Extensions → AIOStreams → Configure**
 7. Paste your manifest URL and save
 
-<details>
-<summary><b>Enable Seadex Integration (Required for Seadex)</b></summary>
-
-> To use Seadex functionality, you **must** add this snippet to your AIOStreams formatter. It's recommended to place it at the bottom to minimize visual clutter:
->
-> ```
-> {stream.infoHash::exists[" 🧩 {stream.infoHash}"||""]}
-> ```
->
-> This displays the torrent info hash (prefixed with 🧩) which is required for Seadex to work properly.
-
-</details>
-
 ## Public Instances
 
 A list of publicly available AIOStreams instances with at least some level of trustworthiness that allow **Torrentio**. Use at your own risk.

@@ -20,7 +20,8 @@ object SeaDexApi {
         
         val entryResponse = client.newCall(entryRequest).execute()
         if (!entryResponse.isSuccessful) {
-            throw Exception("SeaDex API failed: ${entryResponse.code}")
+           
+            return emptySet()
         }
         
         val json = JSONObject(entryResponse.body.string())
@@ -31,6 +32,7 @@ object SeaDexApi {
         }
         
         val bestHashes = mutableSetOf<String>()
+        val fallbackHashes = mutableSetOf<String>()
         
         for (i in 0 until items.length()) {
             val item = items.getJSONObject(i)
@@ -39,20 +41,25 @@ object SeaDexApi {
             
             for (j in 0 until trsArray.length()) {
                 val torrent = trsArray.getJSONObject(j)
-                val infoHash = torrent.optString("infoHash", "")
+                val infoHash = torrent.optString("infoHash", "").lowercase()
                 val isBest = torrent.optBoolean("isBest", false)
                 
+              
                 if (infoHash.isEmpty() || infoHash == "<redacted>") {
                     continue
                 }
-                
                 if (isBest) {
-                    bestHashes.add(infoHash.lowercase())
+                    bestHashes.add(infoHash)
+                } else {
+                    fallbackHashes.add(infoHash)
                 }
             }
         }
-        
-        return bestHashes
+        return if (bestHashes.isNotEmpty()) {
+            bestHashes
+        } else {
+            fallbackHashes
+        }
     }
     
     fun extractInfoHash(description: String): String? {

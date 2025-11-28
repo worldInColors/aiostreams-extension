@@ -135,3 +135,9 @@ jobs:
           publish_dir: ./repo
           publish_branch: repo
           force_orphan: true
+
+      - name: Purge jsDelivr cache
+        run: |
+          curl -s https://purge.jsdelivr.net/gh/worldInColors/aiostreams-extension@repo/index.min.json || true
+          curl -s https://purge.jsdelivr.net/gh/worldInColors/aiostreams-extension@repo/index.json || true
+          curl -s https://purge.jsdelivr.net/gh/worldInColors/aiostreams-extension@repo/repo.json || true

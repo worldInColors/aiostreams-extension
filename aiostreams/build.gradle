@@ -5,7 +5,7 @@ apply plugin: 'kotlinx-serialization'
 ext {
     extName = 'AIOStreams'
     extClass = '.AIOStreams'
-    extVersionCode = 2
+    extVersionCode = 3
 }
 
 // Load keystore properties

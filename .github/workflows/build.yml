@@ -126,9 +126,7 @@ jobs:
           PYTHON_SCRIPT
 
           # Generate repo.json (required metadata file - no indentation)
-          cat > repo/repo.json << 'EOF'
-{"meta":{"name":"AIOStreams Extension","shortName":"AIOStreams","website":"https://github.com/worldInColors/aiostreams-extension"}}
-EOF
+          echo '{"meta":{"name":"AIOStreams Extension","shortName":"AIOStreams","website":"https://github.com/worldInColors/aiostreams-extension"}}' > repo/repo.json
 
       - name: Deploy to repo branch
         uses: peaceiris/actions-gh-pages@v3

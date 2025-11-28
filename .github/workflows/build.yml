@@ -5,6 +5,9 @@ on:
       - "v*"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -37,6 +40,54 @@ jobs:
           files: aiostreams/build/outputs/apk/release/*.apk
           draft: false
           prerelease: false
-
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate repo index
+        run: |
+          mkdir -p repo/apk
+          cp aiostreams/build/outputs/apk/release/*.apk repo/apk/
+
+          # Get version from build.gradle
+          VERSION_CODE=$(grep 'extVersionCode' aiostreams/build.gradle | head -1 | grep -oP '\d+')
+          VERSION="14.${VERSION_CODE}"
+          APK_NAME="aniyomi-all.aiostreams-v${VERSION}.apk"
+
+          # Rename APK to match expected format
+          mv repo/apk/*.apk "repo/apk/${APK_NAME}"
+
+          # The source ID is generated from package name + source name
+          # This ID was calculated using the same algorithm Aniyomi uses
+          # You can get this by installing the extension and checking the source info
+          SOURCE_ID="8052283430657837092"
+
+          # Generate index.min.json
+          cat > repo/index.min.json << EOF
+          [
+            {
+              "name": "Aniyomi: AIOStreams",
+              "pkg": "eu.kanade.tachiyomi.animeextension.all.aiostreams",
+              "apk": "${APK_NAME}",
+              "lang": "all",
+              "code": ${VERSION_CODE},
+              "version": "${VERSION}",
+              "nsfw": 0,
+              "sources": [
+                {
+                  "name": "AIOStreams",
+                  "lang": "all",
+                  "id": ${SOURCE_ID},
+                  "baseUrl": "https://graphql.anilist.co"
+                }
+              ]
+            }
+          ]
+          EOF
+
+      - name: Deploy to repo branch
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./repo
+          publish_branch: repo
+          force_orphan: true

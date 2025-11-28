@@ -56,11 +56,11 @@ jobs:
           # Rename APK to match expected format
           mv repo/apk/*.apk "repo/apk/${APK_NAME}"
 
-          # The source ID is generated from package name + source name
-          SOURCE_ID="8052283430657837092"
+          # Source ID calculated from MD5 of "aiostreams/all/1" (name.lowercase/lang/versionId)
+          SOURCE_ID="8532064095094159513"
 
-          # Generate index.min.json 
-          echo '[{"name":"Aniyomi: AIOStreams","pkg":"eu.kanade.tachiyomi.animeextension.all.aiostreams","apk":"'"${APK_NAME}"'","lang":"all","code":'"${VERSION_CODE}"',"version":"'"${VERSION}"'","nsfw":0,"sources":[{"name":"AIOStreams","lang":"all","id":'"${SOURCE_ID}"',"baseUrl":"https://graphql.anilist.co"}]}]' > repo/index.min.json
+          # Generate index.min.json (ID must be a string, not number!)
+          echo '[{"name":"Aniyomi: AIOStreams","pkg":"eu.kanade.tachiyomi.animeextension.all.aiostreams","apk":"'"${APK_NAME}"'","lang":"all","code":'"${VERSION_CODE}"',"version":"'"${VERSION}"'","nsfw":0,"sources":[{"name":"AIOStreams","lang":"all","id":"'"${SOURCE_ID}"'","baseUrl":"https://graphql.anilist.co"}]}]' > repo/index.min.json
 
       - name: Deploy to repo branch
         uses: peaceiris/actions-gh-pages@v3

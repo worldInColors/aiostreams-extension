@@ -10,12 +10,12 @@ Add the extension repo to Aniyomi/Anikku:
 
 |                                                                                                                                Aniyomi                                                                                                                                |                                                                                                                                Anikku                                                                                                                                |
 | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| [![Install on Aniyomi](https://img.shields.io/badge/Install%20Repo-Aniyomi-blue?style=flat)](https://intradeus.github.io/http-protocol-redirector/?r=aniyomi://add-repo?url=https://raw.githubusercontent.com/worldInColors/aiostreams-extension/repo/index.min.json) | [![Install on Anikku](https://img.shields.io/badge/Install%20Repo-Anikku-purple?style=flat)](https://intradeus.github.io/http-protocol-redirector/?r=anikku://add-repo?url=https://raw.githubusercontent.com/worldInColors/aiostreams-extension/repo/index.min.json) |
+| [![Install on Aniyomi](https://img.shields.io/badge/Install%20Repo-Aniyomi-blue?style=flat)](https://intradeus.github.io/http-protocol-redirector/?r=aniyomi://add-repo?url=https://cdn.jsdelivr.net/gh/worldInColors/aiostreams-extension@repo/index.min.json) | [![Install on Anikku](https://img.shields.io/badge/Install%20Repo-Anikku-purple?style=flat)](https://intradeus.github.io/http-protocol-redirector/?r=anikku://add-repo?url=https://cdn.jsdelivr.net/gh/worldInColors/aiostreams-extension@repo/index.min.json) |
 
 Or manually add this repo URL in Aniyomi settings:
 
 ```
-https://raw.githubusercontent.com/worldInColors/aiostreams-extension/repo/index.min.json
+https://cdn.jsdelivr.net/gh/worldInColors/aiostreams-extension@repo/index.min.json
 ```
 
 ### Manual Install

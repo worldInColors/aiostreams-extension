@@ -48,7 +48,7 @@ jobs:
           mkdir -p repo/apk
           mkdir -p repo/icon
           cp aiostreams/build/outputs/apk/release/*.apk repo/apk/
-          
+
           # Copy icon (use package name as filename like other repos do)
           cp aiostreams/res/mipmap-xxxhdpi/ic_launcher.png repo/icon/eu.kanade.tachiyomi.animeextension.all.aiostreams.png
 
@@ -64,7 +64,7 @@ jobs:
           SOURCE_ID="8532064095094159513"
 
           # Generate index.min.json 
-          echo '[{"name":"Aniyomi: AIOStreams","pkg":"eu.kanade.tachiyomi.animeextension.all.aiostreams","apk":"'"${APK_NAME}"'","lang":"all","code":'"${VERSION_CODE}"',"version":"'"${VERSION}"'","nsfw":0,"sources":[{"name":"AIOStreams","lang":"all","id":"'"${SOURCE_ID}"'","baseUrl":"https://graphql.anilist.co"}]}]' > repo/index.min.json
+          printf '%s' '[{"name":"Aniyomi: AIOStreams","pkg":"eu.kanade.tachiyomi.animeextension.all.aiostreams","apk":"'"${APK_NAME}"'","lang":"all","code":'"${VERSION_CODE}"',"version":"'"${VERSION}"'","nsfw":0,"sources":[{"name":"AIOStreams","lang":"all","id":"'"${SOURCE_ID}"'","baseUrl":"https://graphql.anilist.co"}]}]' > repo/index.min.json
 
           # Generate index.json (pretty-printed)
           cat > repo/index.json << EOF

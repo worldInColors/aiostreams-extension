@@ -1,0 +1,19 @@
+[
+  {
+    "name": "Aniyomi: AIOStreams",
+    "pkg": "eu.kanade.tachiyomi.animeextension.all.aiostreams",
+    "apk": "aniyomi-all.aiostreams-v14.3.apk",
+    "lang": "all",
+    "code": 3,
+    "version": "14.3",
+    "nsfw": 0,
+    "sources": [
+      {
+        "name": "AIOStreams",
+        "lang": "all",
+        "id": "8532064095094159513",
+        "baseUrl": "https://graphql.anilist.co"
+      }
+    ]
+  }
+]

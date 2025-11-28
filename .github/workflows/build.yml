@@ -46,7 +46,11 @@ jobs:
       - name: Generate repo index
         run: |
           mkdir -p repo/apk
+          mkdir -p repo/icon
           cp aiostreams/build/outputs/apk/release/*.apk repo/apk/
+          
+          # Copy icon (use package name as filename like other repos do)
+          cp aiostreams/res/mipmap-xxxhdpi/ic_launcher.png repo/icon/eu.kanade.tachiyomi.animeextension.all.aiostreams.png
 
           # Get version from build.gradle
           VERSION_CODE=$(grep 'extVersionCode' aiostreams/build.gradle | head -1 | grep -oP '\d+')
@@ -59,8 +63,31 @@ jobs:
           # Source ID calculated from MD5 of "aiostreams/all/1" (name.lowercase/lang/versionId)
           SOURCE_ID="8532064095094159513"
 
-          # Generate index.min.json (ID must be a string, not number!)
+          # Generate index.min.json 
           echo '[{"name":"Aniyomi: AIOStreams","pkg":"eu.kanade.tachiyomi.animeextension.all.aiostreams","apk":"'"${APK_NAME}"'","lang":"all","code":'"${VERSION_CODE}"',"version":"'"${VERSION}"'","nsfw":0,"sources":[{"name":"AIOStreams","lang":"all","id":"'"${SOURCE_ID}"'","baseUrl":"https://graphql.anilist.co"}]}]' > repo/index.min.json
+
+          # Generate index.json (pretty-printed)
+          cat > repo/index.json << EOF
+          [
+            {
+              "name": "Aniyomi: AIOStreams",
+              "pkg": "eu.kanade.tachiyomi.animeextension.all.aiostreams",
+              "apk": "${APK_NAME}",
+              "lang": "all",
+              "code": ${VERSION_CODE},
+              "version": "${VERSION}",
+              "nsfw": 0,
+              "sources": [
+                {
+                  "name": "AIOStreams",
+                  "lang": "all",
+                  "id": "${SOURCE_ID}",
+                  "baseUrl": "https://graphql.anilist.co"
+                }
+              ]
+            }
+          ]
+          EOF
 
           # Generate repo.json (required metadata file)
           cat > repo/repo.json << 'EOF'

@@ -60,45 +60,75 @@ jobs:
           # Rename APK to match expected format
           mv repo/apk/*.apk "repo/apk/${APK_NAME}"
 
-          # Source ID calculated from MD5 of "aiostreams/all/1" (name.lowercase/lang/versionId)
-          SOURCE_ID="8532064095094159513"
+          # Download and run the Inspector to generate proper index
+          INSPECTOR_LINK="$(curl -s "https://api.github.com/repos/komikku-app/aniyomi-extensions-inspector/releases/latest" | jq -r '.assets[0].browser_download_url')"
+          curl -L "$INSPECTOR_LINK" -o ./Inspector.jar
+          java -jar ./Inspector.jar "repo/apk" "output.json" "tmp"
 
-          # Generate index.min.json 
-          printf '%s' '[{"name":"Aniyomi: AIOStreams","pkg":"eu.kanade.tachiyomi.animeextension.all.aiostreams","apk":"'"${APK_NAME}"'","lang":"all","code":'"${VERSION_CODE}"',"version":"'"${VERSION}"'","nsfw":0,"sources":[{"name":"AIOStreams","lang":"all","id":"'"${SOURCE_ID}"'","baseUrl":"https://graphql.anilist.co"}]}]' > repo/index.min.json
+          # Export variables for Python script
+          export VERSION_CODE APK_NAME VERSION
 
-          # Generate index.json (pretty-printed)
-          cat > repo/index.json << EOF
-          [
-            {
-              "name": "Aniyomi: AIOStreams",
-              "pkg": "eu.kanade.tachiyomi.animeextension.all.aiostreams",
-              "apk": "${APK_NAME}",
-              "lang": "all",
-              "code": ${VERSION_CODE},
-              "version": "${VERSION}",
-              "nsfw": 0,
-              "sources": [
-                {
-                  "name": "AIOStreams",
+          # Parse inspector output and create index files
+          python3 << 'PYTHON_SCRIPT'
+          import json
+          import os
+          import sys
+
+          version_code = int(os.environ.get("VERSION_CODE", "1"))
+          apk_name = os.environ.get("APK_NAME", "")
+          version = os.environ.get("VERSION", "")
+
+          with open("output.json", "r") as f:
+              inspector_data = json.load(f)
+
+          print(f"Inspector found packages: {list(inspector_data.keys())}")
+
+          # Build index data from inspector output
+          index_data = []
+          pkg = "eu.kanade.tachiyomi.animeextension.all.aiostreams"
+          
+          if pkg in inspector_data:
+              sources = inspector_data[pkg]
+              print(f"Found {len(sources)} source(s) for {pkg}")
+              entry = {
+                  "name": "Aniyomi: AIOStreams",
+                  "pkg": pkg,
+                  "apk": apk_name,
                   "lang": "all",
-                  "id": "${SOURCE_ID}",
-                  "baseUrl": "https://graphql.anilist.co"
-                }
-              ]
-            }
-          ]
-          EOF
+                  "code": version_code,
+                  "version": version,
+                  "nsfw": 0,
+                  "sources": []
+              }
+              for source in sources:
+                  print(f"  Source: {source}")
+                  entry["sources"].append({
+                      "name": source["name"],
+                      "lang": source["lang"],
+                      "id": source["id"],
+                      "baseUrl": source["baseUrl"]
+                  })
+              index_data.append(entry)
+          else:
+              print(f"ERROR: Package {pkg} not found in inspector output!")
+              print(f"Inspector data: {json.dumps(inspector_data, indent=2)}")
+              sys.exit(1)
 
-          # Generate repo.json (required metadata file)
+          # Write minified JSON (no trailing newline)
+          with open("repo/index.min.json", "w") as f:
+              json.dump(index_data, f, separators=(",", ":"), ensure_ascii=False)
+
+          # Write pretty JSON  
+          with open("repo/index.json", "w") as f:
+              json.dump(index_data, f, indent=2, ensure_ascii=False)
+          
+          print(f"Generated index.min.json: {index_data}")
+          PYTHON_SCRIPT
+
+          # Generate repo.json (required metadata file - no indentation)
           cat > repo/repo.json << 'EOF'
-          {
-            "meta": {
-              "name": "AIOStreams Extension",
-              "shortName": "AIOStreams",
-              "website": "https://github.com/worldInColors/aiostreams-extension"
-            }
-          }
-          EOF
+{"meta":{"name":"AIOStreams Extension","shortName":"AIOStreams","website":"https://github.com/worldInColors/aiostreams-extension"}}
+EOF
 
       - name: Deploy to repo branch
         uses: peaceiris/actions-gh-pages@v3

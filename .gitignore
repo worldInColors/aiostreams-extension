@@ -1,0 +1,33 @@
+# Gradle
+.gradle/
+build/
+*/build/
+local.properties
+
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+captures/
+
+# Keystore files 
+*.jks
+*.keystore
+keystore.properties
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
+
+ignore/

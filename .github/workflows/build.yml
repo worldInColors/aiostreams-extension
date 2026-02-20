@@ -1,0 +1,129 @@
+name: Build APK
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_FILE }}" | base64 -d > aiostreams-release.jks
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Release APK
+        run: ./gradlew :aiostreams:assembleRelease
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: aiostreams/build/outputs/apk/release/*.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate repo index
+        run: |
+          mkdir -p repo/apk
+          mkdir -p repo/icon
+          cp aiostreams/build/outputs/apk/release/*.apk repo/apk/
+
+          # Copy icon (use package name as filename like other repos do)
+          cp aiostreams/res/mipmap-xxxhdpi/ic_launcher.png repo/icon/eu.kanade.tachiyomi.animeextension.all.aiostreams.png
+
+          # Get version from build.gradle
+          VERSION_CODE=$(grep 'extVersionCode' aiostreams/build.gradle | head -1 | grep -oP '\d+')
+          VERSION="16.${VERSION_CODE}"
+          APK_NAME="aniyomi-all.aiostreams-v${VERSION}.apk"
+
+          # Rename APK to match expected format
+          mv repo/apk/*.apk "repo/apk/${APK_NAME}"
+
+          # Export variables for Python script
+          export VERSION_CODE APK_NAME VERSION
+
+          # Create index files directly (compatible with lib v16)
+          python3 << 'PYTHON_SCRIPT'
+          import json
+          import os
+          import hashlib
+
+          version_code = int(os.environ.get("VERSION_CODE", "1"))
+          apk_name = os.environ.get("APK_NAME", "")
+          version = os.environ.get("VERSION", "")
+
+          # Same source-id algorithm as AnimeHttpSource.generateId(name, lang, versionId)
+          source_name = "AIOStreams"
+          source_lang = "all"
+          source_version_id = 1
+          key = f"{source_name.lower()}/{source_lang}/{source_version_id}"
+          digest = hashlib.md5(key.encode("utf-8")).digest()
+          source_id = 0
+          for i in range(8):
+              source_id |= (digest[i] & 0xff) << (8 * (7 - i))
+          source_id &= (2**63 - 1)
+
+          index_data = [{
+              "name": "Aniyomi: AIOStreams",
+              "pkg": "eu.kanade.tachiyomi.animeextension.all.aiostreams",
+              "apk": apk_name,
+              "lang": "all",
+              "code": version_code,
+              "version": version,
+              "nsfw": 0,
+              "sources": [{
+                  "name": source_name,
+                  "lang": source_lang,
+                  "id": source_id,
+                  "baseUrl": "https://graphql.anilist.co"
+              }]
+          }]
+
+          # Write minified JSON (no trailing newline)
+          with open("repo/index.min.json", "w") as f:
+              json.dump(index_data, f, separators=(",", ":"), ensure_ascii=False)
+
+          # Write pretty JSON
+          with open("repo/index.json", "w") as f:
+              json.dump(index_data, f, indent=2, ensure_ascii=False)
+
+          print(f"Generated index.min.json: {index_data}")
+          PYTHON_SCRIPT
+
+          # Generate repo.json (required metadata file with signing key fingerprint)
+          echo '{"meta":{"name":"AIOStreams Extension","shortName":"AIOStreams","website":"https://github.com/worldInColors/aiostreams-extension","signingKeyFingerprint":"ba4ff86dd6cbad2a04019beb8e95fb6b8ae5515d0c4992563749797492918f20"}}' > repo/repo.json
+
+      - name: Deploy to repo branch
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./repo
+          publish_branch: repo
+          force_orphan: true
+
+      - name: Purge jsDelivr cache
+        run: |
+          curl -s https://purge.jsdelivr.net/gh/worldInColors/aiostreams-extension@repo/index.min.json || true
+          curl -s https://purge.jsdelivr.net/gh/worldInColors/aiostreams-extension@repo/index.json || true
+          curl -s https://purge.jsdelivr.net/gh/worldInColors/aiostreams-extension@repo/repo.json || true

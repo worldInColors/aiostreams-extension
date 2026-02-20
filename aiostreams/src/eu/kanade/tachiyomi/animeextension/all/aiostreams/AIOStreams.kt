@@ -406,6 +406,10 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                             }
                             date_upload = parseDate(episodeData?.airDate ?: "")
                             
+                            // Rich episode metadata
+                            summary = episodeData?.overview?.takeIf { it.isNotBlank() }
+                            preview_url = episodeData?.image?.takeIf { it.isNotBlank() }
+                            
                             url = buildString {
                                 imdbId?.let { append("imdb:$it|season:$seasonNumber|") }
                                 tmdbId?.let { append("tmdb:$it|season:$seasonNumber|") }

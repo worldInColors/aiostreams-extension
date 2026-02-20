@@ -53,10 +53,27 @@ object FillerListApi {
         val doc = Jsoup.parse(html)
         val fillerEpisodes = mutableSetOf<Int>()
 
-        // Parse filler episodes
+        // Parse filler episodes - look for span.Episodes after the Label
         doc.select("div.filler span.Label").forEach { element ->
             if (element.text().trim() == "Filler Episodes:") {
-                val episodeText = element.nextElementSibling()?.text()?.trim() ?: ""
+                // The episodes are in the next sibling span.Episodes
+                val episodesSpan = element.nextElementSibling()
+                if (episodesSpan != null && episodesSpan.tagName() == "span") {
+                    // Get all episode numbers from <a> tags
+                    episodesSpan.select("a").forEach { link ->
+                        val epNum = link.text().trim().toIntOrNull()
+                        if (epNum != null) {
+                            fillerEpisodes.add(epNum)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also try direct text parsing as fallback
+        if (fillerEpisodes.isEmpty()) {
+            doc.select("div.filler span.Episodes").forEach { element ->
+                val episodeText = element.text().trim()
                 fillerEpisodes.addAll(parseEpisodeRanges(episodeText))
             }
         }
@@ -73,16 +90,30 @@ object FillerListApi {
         // Parse filler episodes
         doc.select("div.filler span.Label").forEach { element ->
             if (element.text().trim() == "Filler Episodes:") {
-                val episodeText = element.nextElementSibling()?.text()?.trim() ?: ""
-                fillerEpisodes.addAll(parseEpisodeRanges(episodeText))
+                val episodesSpan = element.nextElementSibling()
+                if (episodesSpan != null) {
+                    episodesSpan.select("a").forEach { link ->
+                        val epNum = link.text().trim().toIntOrNull()
+                        if (epNum != null) {
+                            fillerEpisodes.add(epNum)
+                        }
+                    }
+                }
             }
         }
 
         // Parse mixed canon/filler episodes
         doc.select("div.mixed_canon\\/filler span.Label").forEach { element ->
             if (element.text().trim() == "Mixed Canon/Filler Episodes:") {
-                val episodeText = element.nextElementSibling()?.text()?.trim() ?: ""
-                mixedEpisodes.addAll(parseEpisodeRanges(episodeText))
+                val episodesSpan = element.nextElementSibling()
+                if (episodesSpan != null) {
+                    episodesSpan.select("a").forEach { link ->
+                        val epNum = link.text().trim().toIntOrNull()
+                        if (epNum != null) {
+                            mixedEpisodes.add(epNum)
+                        }
+                    }
+                }
             }
         }
 

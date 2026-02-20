@@ -365,18 +365,14 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         }
         
-        // Use AniList GraphQL to get mappings for TVDB
+        // Use AniList GraphQL to get basic info (episodes, format)
         val query = """
-            query (${"$"}id: Int) {
-                Media(id: ${"$"}id, type: ANIME) {
+            query ($${"$"}id: Int) {
+                Media(id: $${"$"}id, type: ANIME) {
                     id
                     title { romaji english }
                     episodes
                     format
-                    external {
-                        id
-                        site
-                    }
                 }
             }
         """.trimIndent()
@@ -399,17 +395,22 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val totalEpisodes = media.episodes ?: 0
         val format = media.format ?: "TV"
         
-        // Get external IDs from AniList
-        val externalIds = media.external?.filterNotNull()?.associate { 
-            (it.site ?: "") to (it.id ?: "") 
-        }?.filterKeys { it.isNotBlank() } ?: emptyMap()
-        
-        // Try to get TVDB data
+        // Try to get TVDB data via AniZip mappings first, then TVDB search
         val tvdbApiKey = preferences.getString(PREF_TVDB_API_KEY, "") ?: ""
         val tvdbEpisodes = if (tvdbApiKey.isNotBlank()) {
             try {
-                // Try to find TVDB ID from external links or search
-                val tvdbId = externalIds["TVDB"]?.toLongOrNull()
+                // Try AniZip for TVDB ID mapping
+                val aniZipTvdbId = try {
+                    val aniZipUrl = "https://api.ani.zip/mappings?anilist_id=$currentAnilistId"
+                    val aniZipResponse = client.newCall(GET(aniZipUrl)).execute()
+                    if (aniZipResponse.isSuccessful) {
+                        val aniZipData = json.decodeFromString<AniZipResponse>(aniZipResponse.body.string())
+                        aniZipData.mappings?.theTvDbId
+                    } else null
+                } catch (e: Exception) { null }
+                
+                // Use AniZip TVDB ID, or fall back to TVDB title search
+                val tvdbId = aniZipTvdbId
                     ?: TvDbApi.searchSeries(client, tvdbApiKey, currentAnimeTitle).firstOrNull()?.tvdbId
                 
                 if (tvdbId != null) {

@@ -355,7 +355,8 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun episodeListRequest(anime: SAnime): Request {
         // Extract base ID and title if encoded in URL
         val parts = anime.url.split("|")
-        val baseId = parts.first()
+        val baseId = parts.first().toIntOrNull() ?: 0
+        currentAnilistId = baseId
         
         // Extract title if present (format: id|title:Anime Title|...)
         parts.forEach { part ->
@@ -364,153 +365,135 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         }
         
-        return GET("https://api.ani.zip/mappings?anilist_id=$baseId")
+        // Use AniList GraphQL to get mappings for TVDB
+        val query = """
+            query (${"$"}id: Int) {
+                Media(id: ${"$"}id, type: ANIME) {
+                    id
+                    title { romaji english }
+                    episodes
+                    format
+                    external {
+                        id
+                        site
+                    }
+                }
+            }
+        """.trimIndent()
+
+        val variables = """{"id": $baseId}"""
+        val payload = """{"query": ${JSONObject.quote(query)}, "variables": $variables}"""
+
+        return POST(
+            baseUrl,
+            body = payload.toRequestBody("application/json".toMediaType()),
+            headers = Headers.headersOf("Content-Type", "application/json"),
+        )
     }
 
     override fun episodeListParse(response: Response): List<SEpisode> {
-        if (!response.isSuccessful) {
-            throw Exception("Failed to fetch episodes: ${response.code}")
+        val responseBody = response.body.string()
+        val parsed = json.decodeFromString<AniListMediaResponse>(responseBody)
+        val media = parsed.data?.Media ?: return emptyList()
+        
+        val totalEpisodes = media.episodes ?: 0
+        val format = media.format ?: "TV"
+        
+        // Get external IDs from AniList
+        val externalIds = media.external?.filterNotNull()?.associate { 
+            (it.site ?: "") to (it.id ?: "") 
+        }?.filterKeys { it.isNotBlank() } ?: emptyMap()
+        
+        // Try to get TVDB data
+        val tvdbApiKey = preferences.getString(PREF_TVDB_API_KEY, "") ?: ""
+        val tvdbEpisodes = if (tvdbApiKey.isNotBlank()) {
+            try {
+                // Try to find TVDB ID from external links or search
+                val tvdbId = externalIds["TVDB"]?.toLongOrNull()
+                    ?: TvDbApi.searchSeries(client, tvdbApiKey, currentAnimeTitle).firstOrNull()?.tvdbId
+                
+                if (tvdbId != null) {
+                    TvDbApi.getAllEpisodes(client, tvdbApiKey, tvdbId)
+                } else {
+                    emptyList()
+                }
+            } catch (e: Exception) {
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
+        
+        // Create episode map from TVDB data
+        val tvdbEpisodeMap = TvDbApi.episodesToMap(tvdbEpisodes, useAbsoluteNumbering = true)
+        
+        // Fetch filler episode list if enabled
+        val fillerEpisodes = if (preferences.getBoolean(PREF_MARK_FILLERS, PREF_MARK_FILLERS_DEFAULT) && currentAnimeTitle.isNotBlank()) {
+            try {
+                val slug = FillerListApi.titleToSlug(currentAnimeTitle)
+                FillerListApi.getFillerEpisodes(client, slug)
+            } catch (e: Exception) {
+                emptySet()
+            }
+        } else {
+            emptySet()
         }
 
-        val responseString = response.body.string()
-        val aniZipResponse = json.decodeFromString<AniZipResponse>(responseString)
-        val mappings = aniZipResponse.mappings
-        val type = mappings?.type ?: ""
-
-        val anilistId = mappings?.aniListId?.toInt() ?: 0
-        val malId = mappings?.myAnimeListId
-        val kitsuId = mappings?.kitsuId
-        val imdbId = mappings?.imdbId
-        val tmdbId = mappings?.theMovieDbId
-        val aniDbId = mappings?.aniDbId
-
-        return when (type) {
-            "TV", "ONA", "OVA" -> {
-                val episodes = aniZipResponse.episodes ?: return emptyList()
-                val episodeList = mutableListOf<SEpisode>()
-                
-                // AniDB titles disabled for now - causes blocking issues
-                // TODO: Implement proper async fetching
-                val aniDbTitles = emptyMap<String, String>()
-
-                // Fetch filler episode list if enabled
-                val fillerEpisodes = if (preferences.getBoolean(PREF_MARK_FILLERS, PREF_MARK_FILLERS_DEFAULT) && currentAnimeTitle.isNotBlank()) {
-                    try {
-                        val slug = FillerListApi.titleToSlug(currentAnimeTitle)
-                        FillerListApi.getFillerEpisodes(client, slug)
-                    } catch (e: Exception) {
-                        emptySet()
-                    }
-                } else {
-                    emptySet()
-                }
-
-                val now = System.currentTimeMillis()
-                
-                episodes.forEach { (episodeNumKey, episodeData) ->
-                    val episodeNumber = episodeNumKey.toFloatOrNull() ?: return@forEach
-                    val seasonNumber = episodeData?.seasonNumber ?: 1
-                    val episodeInSeason = episodeData?.episodeNumber ?: episodeNumKey.toIntOrNull() ?: 1
-
-                    // Skip future episodes (those that haven't aired yet)
-                    val airDate = parseDate(episodeData?.airDate ?: "")
-                    if (airDate > 0 && airDate > now) return@forEach
-
-                    // Get the best available title
-                    val epTitle = getBestEpisodeTitle(
-                        episodeData?.title,
-                        aniDbTitles[episodeNumKey]
-                    )
-
-                    // Check if this episode is filler
-                    val isFiller = fillerEpisodes.contains(episodeNumKey.toIntOrNull())
-
-                    episodeList.add(
-                        SEpisode.create().apply {
-                            episode_number = episodeNumber
-                            name = if (epTitle.isNotBlank()) {
-                                if (isFiller) "🦊 Episode $episodeNumKey: $epTitle" else "Episode $episodeNumKey: $epTitle"
-                            } else {
-                                if (isFiller) "🦊 Episode $episodeNumKey (Filler)" else "Episode $episodeNumKey"
-                            }
-                            date_upload = parseDate(episodeData?.airDate ?: "")
-                            
-                            // Rich episode metadata
-                            summary = episodeData?.overview?.takeIf { it.isNotBlank() }
-                            preview_url = episodeData?.image?.takeIf { it.isNotBlank() }
-                            fillermark = isFiller
-                            
-                            url = buildString {
-                                imdbId?.let { append("imdb:$it|season:$seasonNumber|") }
-                                tmdbId?.let { append("tmdb:$it|season:$seasonNumber|") }
-                                malId?.let { append("mal:$it|") }
-                                kitsuId?.let { append("kitsu:$it|") }
-                                append("anilist:$anilistId|ep:$episodeNumKey|epInSeason:$episodeInSeason")
-                            }
-                        }
-                    )
-                }
-                episodeList.sortedBy { it.episode_number }.reversed()
-            }
+        val episodeList = mutableListOf<SEpisode>()
+        val now = System.currentTimeMillis()
+        
+        when (format) {
             "MOVIE" -> {
-                val dateUpload = aniZipResponse.episodes?.get("1")?.airDate?.let { parseDate(it) } ?: 0L
-                listOf(
+                val tvdbEp = tvdbEpisodeMap["1"]
+                episodeList.add(
                     SEpisode.create().apply {
                         episode_number = 1.0F
-                        name = "Movie"
-                        date_upload = dateUpload
-                        url = buildString {
-                            imdbId?.let { append("imdb:$it|") }
-                            tmdbId?.let { append("tmdb:$it|") }
-                            malId?.let { append("mal:$it|") }
-                            kitsuId?.let { append("kitsu:$it|") }
-                            append("anilist:$anilistId|ep:movie")
-                        }
+                        name = tvdbEp?.name?.takeIf { it.isNotBlank() } ?: "Movie"
+                        date_upload = parseDate(tvdbEp?.airDate ?: "")
+                        summary = tvdbEp?.overview?.takeIf { it.isNotBlank() }
+                        preview_url = tvdbEp?.imageUrl?.takeIf { it.isNotBlank() }
+                        url = "anilist:$currentAnilistId|ep:movie"
                     }
                 )
             }
-            else -> emptyList()
-        }
-    }
-
-    /**
-     * Get the best available episode title
-     * Priority: ani.zip en > ani.zip romaji > ani.zip native > AniDB title
-     */
-    private fun getBestEpisodeTitle(
-        aniZipTitle: Map<String, String?>?,
-        aniDbTitle: String?
-    ): String {
-        if (aniZipTitle.isNullOrEmpty()) {
-            return aniDbTitle?.takeIf { it.isNotBlank() } ?: ""
+            else -> {
+                // TV/ONA/OVA/SHORT - generate episodes
+                val maxEpisodes = if (totalEpisodes > 0) totalEpisodes else 1000
+                
+                for (epNum in 1..maxEpisodes) {
+                    val tvdbEp = tvdbEpisodeMap[epNum.toString()]
+                    val airDate = parseDate(tvdbEp?.airDate ?: "")
+                    
+                    // Skip future episodes only if we have air date
+                    if (airDate > 0 && airDate > now) continue
+                    
+                    val epTitle = tvdbEp?.name?.takeIf { it.isNotBlank() } ?: ""
+                    val isFiller = fillerEpisodes.contains(epNum)
+                    
+                    // If no TVDB data and we've passed the last known episode, stop
+                    if (tvdbEp == null && totalEpisodes > 0 && epNum > totalEpisodes) break
+                    
+                    episodeList.add(
+                        SEpisode.create().apply {
+                            episode_number = epNum.toFloat()
+                            name = when {
+                                epTitle.isNotBlank() && isFiller -> "🦊 Episode $epNum: $epTitle"
+                                epTitle.isNotBlank() -> "Episode $epNum: $epTitle"
+                                isFiller -> "🦊 Episode $epNum (Filler)"
+                                else -> "Episode $epNum"
+                            }
+                            date_upload = airDate
+                            summary = tvdbEp?.overview?.takeIf { it.isNotBlank() }
+                            preview_url = tvdbEp?.imageUrl?.takeIf { it.isNotBlank() }
+                            fillermark = isFiller
+                            url = "anilist:$currentAnilistId|ep:$epNum|season:${tvdbEp?.seasonNumber ?: 1}|epInSeason:${tvdbEp?.episodeNumber ?: epNum}"
+                        }
+                    )
+                }
+            }
         }
         
-        // Check for valid English title (not null string)
-        val enTitle = aniZipTitle["en"]?.takeIf { 
-            it.isNotBlank() && it != "null" 
-        }
-        if (!enTitle.isNullOrBlank()) return enTitle
-        
-        // Fallback to romaji
-        val romajiTitle = aniZipTitle["romaji"]?.takeIf { 
-            it.isNotBlank() && it != "null" 
-        }
-        if (!romajiTitle.isNullOrBlank()) return romajiTitle
-        
-        // Fallback to native
-        val nativeTitle = aniZipTitle["native"]?.takeIf { 
-            it.isNotBlank() && it != "null" 
-        }
-        if (!nativeTitle.isNullOrBlank()) return nativeTitle
-        
-        // Fallback to x-jat (transliterated Japanese)
-        val xjatTitle = aniZipTitle["x-jat"]?.takeIf { 
-            it.isNotBlank() && it != "null" 
-        }
-        if (!xjatTitle.isNullOrBlank()) return xjatTitle
-        
-        // Final fallback to AniDB
-        return aniDbTitle?.takeIf { it.isNotBlank() } ?: ""
+        return episodeList.sortedByDescending { it.episode_number }
     }
 
     // ============================ Video Links =============================
@@ -803,6 +786,13 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             summary = "Fetch filler data from animefillerlist.com and mark filler episodes with 🦊 icon."
             setDefaultValue(PREF_MARK_FILLERS_DEFAULT)
         }.also(screen::addPreference)
+
+        EditTextPreference(screen.context).apply {
+            key = PREF_TVDB_API_KEY
+            title = "TVDB API Key"
+            summary = "Optional: Enter your TVDB API key for full episode metadata (titles, images, descriptions). Get one free at thetvdb.com"
+            setDefaultValue("")
+        }.also(screen::addPreference)
     }
 
     companion object {
@@ -821,5 +811,6 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         private const val PREF_SEADEX_SORT_DEFAULT = true
         private const val PREF_MARK_FILLERS = "mark_filler_episodes"
         private const val PREF_MARK_FILLERS_DEFAULT = false
+        private const val PREF_TVDB_API_KEY = "tvdb_api_key"
     }
 }

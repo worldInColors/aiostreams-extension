@@ -130,6 +130,14 @@ data class AniListMedia(
     val recommendations: AniListRecommendationConnection? = null,
     val isAdult: Boolean? = null,
     val countryOfOrigin: String? = null,
+    val external: List<AniListExternalLink?>? = null,
+)
+
+@Serializable
+data class AniListExternalLink(
+    val id: String? = null,
+    val site: String? = null,
+    val url: String? = null,
 )
 
 @Serializable

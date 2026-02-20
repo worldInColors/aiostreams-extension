@@ -177,10 +177,12 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val useSeasons = preferences.getBoolean(PREF_USE_SEASONS, PREF_USE_SEASONS_DEFAULT)
 
         return SAnime.create().apply {
-            this.title = title?.english?.takeIf { it.isNotBlank() } ?: title?.romaji.orEmpty()
+            val animeTitle = title?.english?.takeIf { it.isNotBlank() } ?: title?.romaji.orEmpty()
+            this.title = animeTitle
             thumbnail_url = media.coverImage?.extraLarge?.takeIf { it.isNotBlank() }
                 ?: media.coverImage?.large.orEmpty()
-            url = media.id.toString()
+            // Include title in URL for filler lookup
+            url = "${media.id}|title:${animeTitle.replace("|", " ")}"
             description = buildString {
                 media.description?.replace(Regex("<[^>]*>"), "")?.let { 
                     if (it.isNotBlank()) append("$it\n\n") 
@@ -347,9 +349,21 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // ============================== Episodes ==============================
 
+    // Store anime title for filler lookup (passed via URL encoding)
+    private var currentAnimeTitle: String = ""
+
     override fun episodeListRequest(anime: SAnime): Request {
-        // Extract base ID if it contains season info
-        val baseId = anime.url.split("|").first()
+        // Extract base ID and title if encoded in URL
+        val parts = anime.url.split("|")
+        val baseId = parts.first()
+        
+        // Extract title if present (format: id|title:Anime Title|...)
+        parts.forEach { part ->
+            if (part.startsWith("title:")) {
+                currentAnimeTitle = part.removePrefix("title:")
+            }
+        }
+        
         return GET("https://api.ani.zip/mappings?anilist_id=$baseId")
     }
 
@@ -379,6 +393,18 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                 // TODO: Implement proper async fetching
                 val aniDbTitles = emptyMap<String, String>()
 
+                // Fetch filler episode list if enabled
+                val fillerEpisodes = if (preferences.getBoolean(PREF_MARK_FILLERS, PREF_MARK_FILLERS_DEFAULT) && currentAnimeTitle.isNotBlank()) {
+                    try {
+                        val slug = FillerListApi.titleToSlug(currentAnimeTitle)
+                        FillerListApi.getFillerEpisodes(client, slug)
+                    } catch (e: Exception) {
+                        emptySet()
+                    }
+                } else {
+                    emptySet()
+                }
+
                 val now = System.currentTimeMillis()
                 
                 episodes.forEach { (episodeNumKey, episodeData) ->
@@ -396,19 +422,23 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                         aniDbTitles[episodeNumKey]
                     )
 
+                    // Check if this episode is filler
+                    val isFiller = fillerEpisodes.contains(episodeNumKey.toIntOrNull())
+
                     episodeList.add(
                         SEpisode.create().apply {
                             episode_number = episodeNumber
                             name = if (epTitle.isNotBlank()) {
-                                "Episode $episodeNumKey: $epTitle"
+                                if (isFiller) "🦊 Episode $episodeNumKey: $epTitle" else "Episode $episodeNumKey: $epTitle"
                             } else {
-                                "Episode $episodeNumKey"
+                                if (isFiller) "🦊 Episode $episodeNumKey (Filler)" else "Episode $episodeNumKey"
                             }
                             date_upload = parseDate(episodeData?.airDate ?: "")
                             
                             // Rich episode metadata
                             summary = episodeData?.overview?.takeIf { it.isNotBlank() }
                             preview_url = episodeData?.image?.takeIf { it.isNotBlank() }
+                            fillermark = isFiller
                             
                             url = buildString {
                                 imdbId?.let { append("imdb:$it|season:$seasonNumber|") }
@@ -766,6 +796,13 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             title = "Move SeaDex Best to Top"
             setDefaultValue(PREF_SEADEX_SORT_DEFAULT)
         }.also(screen::addPreference)
+
+        SwitchPreferenceCompat(screen.context).apply {
+            key = PREF_MARK_FILLERS
+            title = "Mark Filler Episodes"
+            summary = "Fetch filler data from animefillerlist.com and mark filler episodes with 🦊 icon."
+            setDefaultValue(PREF_MARK_FILLERS_DEFAULT)
+        }.also(screen::addPreference)
     }
 
     companion object {
@@ -782,5 +819,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         private const val PREF_SEADEX_HIGHLIGHT_DEFAULT = true
         private const val PREF_SEADEX_SORT = "seadex_sort_best"
         private const val PREF_SEADEX_SORT_DEFAULT = true
+        private const val PREF_MARK_FILLERS = "mark_filler_episodes"
+        private const val PREF_MARK_FILLERS_DEFAULT = false
     }
 }

@@ -197,6 +197,7 @@ object KitsuApi {
         @SerialName("airdate") val airDate: String? = null,
         val thumbnail: KitsuPoster? = null,
         val length: Int? = null,
+        val synopsis: String? = null,
     )
 
     // ============================ Result types =========================

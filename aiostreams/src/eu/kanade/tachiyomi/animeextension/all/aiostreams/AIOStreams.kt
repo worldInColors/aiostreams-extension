@@ -31,6 +31,7 @@ import uy.kohesive.injekt.api.get
 import java.text.SimpleDateFormat
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
@@ -216,33 +217,33 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // ============================== Seasons ===============================
 
-    // Base anime id for the season list being parsed (the relations payload
-    // only contains related entries, not the anime itself)
-    private var currentSeasonBaseId: String? = null
-
     override fun seasonListRequest(anime: SAnime): Request {
         val kitsuId = resolveKitsuId(anime.url)
             ?: throw Exception("Could not resolve anime id from '${anime.url}'")
-        currentSeasonBaseId = kitsuId
         return GET(KitsuApi.relationsUrl(kitsuId), headers)
     }
 
     override fun seasonListParse(response: Response): List<SAnime> {
         val relations = KitsuApi.parseRelations(response.body.string())
 
-        val baseId = currentSeasonBaseId
+        // The relations payload doesn't contain the base anime itself, but its
+        // id sits in the request URL path (/anime/{id}/media-relationships)
+        val segments = response.request.url.pathSegments
+        val baseId = segments.getOrNull(segments.indexOf("anime") + 1)
         val main = baseId?.let { KitsuApi.fetchAnime(client, it) } ?: return emptyList()
+        val mainTitle = pickTitle(main.anime)
         if (currentAnimeTitle.isBlank()) {
-            currentAnimeTitle = pickTitle(main.anime)
+            currentAnimeTitle = mainTitle
         }
+        val titlePart = "title:${mainTitle.replace("|", " ")}"
 
         val seasonList = mutableListOf<SAnime>()
 
         // The main anime as "Season 1"
         seasonList.add(SAnime.create().apply {
-            title = pickTitle(main.anime)
+            title = mainTitle
             thumbnail_url = bestPoster(main.anime)
-            url = "kitsu:${main.id}|season:1"
+            url = "kitsu:${main.id}|season:1|$titlePart"
             description = main.anime.synopsis.orEmpty()
             genre = main.categories.joinToString(", ")
             status = parseKitsuStatus(main.anime.status)
@@ -276,7 +277,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                     seasonList.add(SAnime.create().apply {
                         title = relTitle
                         thumbnail_url = bestPoster(edge.anime)
-                        url = "kitsu:${edge.id}|season:$seasonNum"
+                        url = "kitsu:${edge.id}|season:$seasonNum|$titlePart"
                         description = "Related as: ${edge.role}"
                         status = parseKitsuStatus(edge.anime.status)
                         fetch_type = FetchType.Episodes
@@ -291,56 +292,44 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // ============================== Episodes ==============================
 
-    // Store anime title for filler/local lookup (passed via URL encoding)
+    // Anime title for the filler/local-file flows. The canonical copy travels
+    // inside the episode URL ("title:..."), so hoster fetches re-derive it and
+    // stale values from a concurrent library refresh can't leak into playback.
     private var currentAnimeTitle: String = ""
-    // Store ID mappings from AniZip for streaming
-    private var currentIdMappings: AniZipMappings? = null
-    // Store AniZip episodes for metadata (English titles, images, descriptions)
-    private var currentAniZipEpisodes: Map<String, AniZipEpisode?> = emptyMap()
-    // Kitsu episodes (fallback when AniZip has no data)
-    private var currentKitsuEpisodes: Map<Int, KitsuApi.KitsuEpisode> = emptyMap()
-    // TVDB episodes (optional enrichment when an API key is configured)
-    private var currentTvdbEpisodes: Map<String, TvDbApi.EpisodeData> = emptyMap()
-    // Kitsu id for the episode list being built
-    private var currentKitsuId: String? = null
+
     // Cache of resolved legacy AniList ids -> Kitsu ids
-    private val kitsuIdByAnilist = mutableMapOf<Int, String>()
+    private val kitsuIdByAnilist = ConcurrentHashMap<Int, String>()
+
+    /**
+     * Per-parse episode metadata sources. Kept as locals instead of instance
+     * fields so parallel library updates of different entries can't read each
+     * other's AniZip/Kitsu/TVDB data (GitHub issue #3: entries showing another
+     * show's episode list after a Global Update until manually refreshed).
+     */
+    private class EpisodeSources(
+        val anizip: AniZipResponse?,
+        val kitsu: Map<Int, KitsuApi.KitsuEpisode>,
+        val tvdb: Map<String, TvDbApi.EpisodeData>,
+        val anidb: Map<String, String>,
+    ) {
+        val anizipEpisodes: Map<String, AniZipEpisode?> get() = anizip?.episodes ?: emptyMap()
+    }
 
     override fun episodeListRequest(anime: SAnime): Request {
-        // Extract base ID and title if encoded in URL
-        val parts = anime.url.split("|")
-        val base = parts.first()
-        parts.forEach { part ->
-            if (part.startsWith("title:")) {
-                currentAnimeTitle = part.removePrefix("title:")
-            }
+        val base = anime.url.split("|").first()
+        anime.url.split("|").forEach { part ->
+            if (part.startsWith("title:")) currentAnimeTitle = part.removePrefix("title:")
         }
 
-        var kitsuId: String? = null
-        var anizip: AniZipResponse? = null
-
-        if (base.startsWith("kitsu:")) {
-            kitsuId = base.removePrefix("kitsu:")
-            anizip = fetchAniZip("kitsu_id=$kitsuId")
+        val kitsuId = resolveKitsuId(anime.url)
+        return if (kitsuId != null) {
+            GET(KitsuApi.animeDetailsUrl(kitsuId), headers)
         } else {
-            // Legacy URL: a bare AniList id from an older version of this extension
-            base.toIntOrNull()?.let { anilistId ->
-                anizip = fetchAniZip("anilist_id=$anilistId")
-                kitsuId = anizip?.mappings?.kitsuId?.toString()?.also {
-                    kitsuIdByAnilist[anilistId] = it
-                } ?: kitsuIdByAnilist[anilistId]
-            }
+            // Unresolvable legacy entry — AniZip-only parse, keyed by the id
+            // embedded in this very request URL
+            val anilistId = base.toIntOrNull() ?: 0
+            GET("https://api.ani.zip/mappings?anilist_id=$anilistId", headers)
         }
-
-        currentKitsuId = kitsuId
-        currentIdMappings = anizip?.mappings
-        currentAniZipEpisodes = anizip?.episodes ?: emptyMap()
-
-        currentKitsuId?.let { id ->
-            return GET(KitsuApi.animeDetailsUrl(id), headers)
-        }
-        // No Kitsu id resolvable — fall back to AniZip-only parsing
-        return GET("https://api.ani.zip/mappings", headers)
     }
 
     /**
@@ -375,63 +364,90 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     override fun episodeListParse(response: Response): List<SEpisode> {
-        val kitsuId = currentKitsuId ?: return buildFallbackEpisodeList()
-        val parsed = KitsuApi.parseAnimeResponse(response.body.string(), fallbackId = kitsuId)
-            ?: return buildFallbackEpisodeList()
+        val body = response.body.string()
+        val parsed = KitsuApi.parseAnimeResponse(body)
 
+        // Kitsu path: every side-fetch below is keyed by the id that traveled
+        // through this response, so concurrent refreshes stay isolated.
+        if (parsed != null) {
+            return buildFromKitsu(parsed)
+        }
+
+        // Unresolvable legacy entry — the request hit AniZip directly and the
+        // body is self-describing
+        val anizip = try {
+            json.decodeFromString<AniZipResponse>(body)
+        } catch (e: Exception) {
+            null
+        } ?: return emptyList()
         if (currentAnimeTitle.isBlank()) {
-            currentAnimeTitle = pickTitle(parsed.anime)
+            currentAnimeTitle = anizip.titles?.values?.filterNotNull()?.firstOrNull().orEmpty()
+        }
+        return buildFallbackEpisodeList(anizip)
+    }
+
+    private fun buildFromKitsu(details: KitsuApi.AnimeDetails): List<SEpisode> {
+        if (currentAnimeTitle.isBlank()) {
+            currentAnimeTitle = pickTitle(details.anime)
         }
 
-        // Kitsu episode fallback when AniZip has no episode data
-        if (currentAniZipEpisodes.isEmpty()) {
-            currentKitsuEpisodes = KitsuApi.fetchEpisodes(client, kitsuId)
+        val anizip = fetchAniZip("kitsu_id=${details.id}")
+        val anizipEpisodes = anizip?.episodes ?: emptyMap()
+
+        // Kitsu is the primary episode-metadata source: its English titles,
+        // synopses and thumbnails cover long shows far better than AniZip
+        // (AniZip's Naruto entry has no titles at all and synopses only
+        // through ep 48). Kitsu pages at 20/request though, so very long
+        // shows stay AniZip-primary (AniZip covers them in one request).
+        val totalEpisodes = details.anime.episodeCount ?: 0
+        val knownEpisodes = maxOf(totalEpisodes, anizipEpisodes.size)
+        val kitsuEpisodes = if (
+            anizipEpisodes.isEmpty() || knownEpisodes <= KITSU_EPISODE_FETCH_CAP
+        ) {
+            KitsuApi.fetchEpisodes(client, details.id)
+        } else {
+            emptyMap()
         }
 
-        // Optional TVDB enrichment (requires user API key; id needs no key)
-        loadTvdbEpisodes(parsed)
+        val tvdbEpisodes = loadTvdbEpisodes(details, anizip)
+        val partial = EpisodeSources(anizip, kitsuEpisodes, tvdbEpisodes, emptyMap())
+        val anidbTitles = fetchAniDbTitlesIfNeeded(details, partial)
 
-        return buildEpisodeList(parsed)
+        return buildEpisodeList(details, EpisodeSources(anizip, kitsuEpisodes, tvdbEpisodes, anidbTitles))
     }
 
     /**
-     * Populate TVDB episode data when a key is configured and a TVDB series id
-     * is available from AniZip/Kitsu mappings. Fills gaps AniZip/Kitsu leave
+     * TVDB episode data when a key is configured and a TVDB series id is
+     * available from AniZip/Kitsu mappings. Fills gaps AniZip/Kitsu leave
      * (titles, overviews, thumbnails) — English by default.
      */
-    private fun loadTvdbEpisodes(details: KitsuApi.AnimeDetails) {
-        currentTvdbEpisodes = emptyMap()
+    private fun loadTvdbEpisodes(details: KitsuApi.AnimeDetails, anizip: AniZipResponse?): Map<String, TvDbApi.EpisodeData> {
         val tvdbKey = preferences.getString(PREF_TVDB_KEY, "").orEmpty()
-        if (tvdbKey.isBlank()) return
+        if (tvdbKey.isBlank()) return emptyMap()
 
-        val tvdbId = currentIdMappings?.theTvDbId
+        val tvdbId = anizip?.mappings?.theTvDbId
             ?: details.mappings["thetvdb/series"]?.toLongOrNull()
             ?: details.mappings["thetvdb"]?.substringBefore("/")?.toLongOrNull()
-        if (tvdbId == null || tvdbId <= 0) return
+        if (tvdbId == null || tvdbId <= 0) return emptyMap()
 
         val episodes = TvDbApi.getAllEpisodes(client, tvdbKey, tvdbId)
-        if (episodes.isNotEmpty()) {
-            currentTvdbEpisodes = TvDbApi.episodesToMap(episodes)
-        }
+        return if (episodes.isNotEmpty()) TvDbApi.episodesToMap(episodes) else emptyMap()
     }
 
-    private fun buildEpisodeList(details: KitsuApi.AnimeDetails): List<SEpisode> {
+    private fun buildEpisodeList(details: KitsuApi.AnimeDetails, sources: EpisodeSources): List<SEpisode> {
         val anime = details.anime
         val totalEpisodes = anime.episodeCount ?: 0
         val isMovie = anime.subtype == "movie"
 
-        val anizipEpisodes = currentAniZipEpisodes
-        val kitsuEpisodes = currentKitsuEpisodes
-        val tvdbEpisodes = currentTvdbEpisodes
-
-        // AniDB titles fill whatever is still missing after the other sources
-        val anidbTitles = fetchAniDbTitlesIfNeeded(details)
+        val anizipEpisodes = sources.anizipEpisodes
+        val kitsuEpisodes = sources.kitsu
+        val tvdbEpisodes = sources.tvdb
 
         val metadataStatus = buildList {
             if (anizipEpisodes.isNotEmpty()) add("AniZip: ${anizipEpisodes.size}")
             if (kitsuEpisodes.isNotEmpty()) add("Kitsu: ${kitsuEpisodes.size}")
             if (tvdbEpisodes.isNotEmpty()) add("TVDB: ${tvdbEpisodes.size}")
-            if (anidbTitles.isNotEmpty()) add("AniDB: ${anidbTitles.size}")
+            if (sources.anidb.isNotEmpty()) add("AniDB: ${sources.anidb.size}")
         }.joinToString(", ").ifBlank { "No episode metadata" }
 
         val fillerEpisodes = if (preferences.getBoolean(PREF_MARK_FILLERS, PREF_MARK_FILLERS_DEFAULT) && currentAnimeTitle.isNotBlank()) {
@@ -448,43 +464,47 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val episodeList = mutableListOf<SEpisode>()
         val now = System.currentTimeMillis()
 
-        val mappings = currentIdMappings
+        val mappings = sources.anizip?.mappings
         val imdbPart = mappings?.imdbId?.let { "imdb:$it" } ?: ""
         val tmdbPart = mappings?.theMovieDbId?.let { "tmdb:$it" } ?: ""
-        val kitsuPart = (currentKitsuId ?: details.id).let { "kitsu:$it" }
+        val kitsuPart = "kitsu:${details.id}"
         val malPart = mappings?.myAnimeListId?.let { "mal:$it" } ?: ""
         val anilistPart = mappings?.aniListId?.let { "anilist:$it" } ?: ""
+        val titlePart = currentAnimeTitle.takeIf { it.isNotBlank() }
+            ?.let { "title:${it.replace("|", " ")}" } ?: ""
 
         if (isMovie) {
-            val epTitle = episodeTitle(1).ifBlank { "Movie" }
+            val epTitle = episodeTitle(1, sources).ifBlank { "Movie" }
             episodeList.add(
                 SEpisode.create().apply {
                     episode_number = 1.0F
                     name = epTitle
-                    date_upload = episodeAirDate(1)
-                    summary = episodeOverview(1)
-                    preview_url = episodeImage(1)
+                    date_upload = episodeAirDate(1, sources)
+                    summary = episodeOverview(1, sources)
+                    preview_url = episodeImage(1, sources)
                     scanlator = metadataStatus
-                    url = buildEpisodeUrl("movie", 0, 0, imdbPart, tmdbPart, kitsuPart, malPart, anilistPart)
+                    url = buildEpisodeUrl("movie", 0, 0, imdbPart, tmdbPart, kitsuPart, malPart, anilistPart, titlePart)
                 },
             )
         } else {
             val maxEpisodes = when {
-                anizipEpisodes.isNotEmpty() -> anizipEpisodes.keys.mapNotNull { it.toIntOrNull() }.maxOrNull() ?: totalEpisodes
+                // Kitsu numbers only aired episodes; AniZip folds specials
+                // into the numeric range (Naruto: 246 keys for 220 episodes)
                 kitsuEpisodes.isNotEmpty() -> kitsuEpisodes.keys.maxOrNull() ?: totalEpisodes
+                anizipEpisodes.isNotEmpty() -> anizipEpisodes.keys.mapNotNull { it.toIntOrNull() }.maxOrNull() ?: totalEpisodes
                 totalEpisodes > 0 -> totalEpisodes
                 else -> 0
             }
 
             for (epNum in 1..maxEpisodes) {
-                val airDate = episodeAirDate(epNum)
+                val airDate = episodeAirDate(epNum, sources)
 
                 if (airDate > 0 && airDate > now) continue
 
-                val epTitle = episodeTitle(epNum)
+                val epTitle = episodeTitle(epNum, sources)
                 val isFiller = fillerEpisodes.contains(epNum)
 
-                if (!hasEpisodeData(epNum) && totalEpisodes > 0 && epNum > totalEpisodes) break
+                if (!hasEpisodeData(epNum, sources) && totalEpisodes > 0 && epNum > totalEpisodes) break
 
                 val seasonNum = anizipEpisodes[epNum.toString()]?.seasonNumber
                     ?: kitsuEpisodes[epNum]?.seasonNumber ?: 1
@@ -501,13 +521,13 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                             else -> "Episode $epNum"
                         }
                         date_upload = airDate
-                        summary = episodeOverview(epNum)
-                        preview_url = episodeImage(epNum)
+                        summary = episodeOverview(epNum, sources)
+                        preview_url = episodeImage(epNum, sources)
                         fillermark = isFiller
                         if (epNum == 1 && metadataStatus.isNotBlank()) {
                             scanlator = metadataStatus
                         }
-                        url = buildEpisodeUrl(epNum.toString(), seasonNum, epInSeason, imdbPart, tmdbPart, kitsuPart, malPart, anilistPart)
+                        url = buildEpisodeUrl(epNum.toString(), seasonNum, epInSeason, imdbPart, tmdbPart, kitsuPart, malPart, anilistPart, titlePart)
                     },
                 )
             }
@@ -516,94 +536,98 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         return episodeList.sortedByDescending { it.episode_number }
     }
 
-    // ---- per-episode metadata merge: AniZip -> Kitsu -> TVDB -> AniDB ----
+    // ---- per-episode metadata merge: Kitsu first, AniZip fills gaps, TVDB
+    // ---- and AniDB last. Within titles: English before romaji before Japanese.
 
-    private fun hasEpisodeData(epNum: Int): Boolean =
-        currentAniZipEpisodes.containsKey(epNum.toString()) ||
-            currentKitsuEpisodes.containsKey(epNum) ||
-            currentTvdbEpisodes.containsKey(epNum.toString())
+    private fun hasEpisodeData(epNum: Int, sources: EpisodeSources): Boolean =
+        sources.anizipEpisodes.containsKey(epNum.toString()) ||
+            sources.kitsu.containsKey(epNum) ||
+            sources.tvdb.containsKey(epNum.toString())
 
-    private fun episodeTitle(epNum: Int): String {
-        currentAniZipEpisodes[epNum.toString()]?.title?.let { titles ->
-            (titles["en"] ?: titles["en_jp"] ?: titles["ja"])
-                ?.takeIf { it.isNotBlank() }?.let { return it }
-        }
-        currentKitsuEpisodes[epNum]?.titles?.let { titles ->
-            (titles.enUs ?: titles.en ?: titles.enJp ?: titles.jaJp)
-                ?.takeIf { it.isNotBlank() }?.let { return it }
-        }
-        currentTvdbEpisodes[epNum.toString()]?.name
-            ?.takeIf { it.isNotBlank() }?.let { return it }
-        return anidbTitleCache[epNum.toString()].orEmpty()
+    private fun episodeTitle(epNum: Int, sources: EpisodeSources): String {
+        val anizipTitles = sources.anizipEpisodes[epNum.toString()]?.title
+        val kitsuTitles = sources.kitsu[epNum]?.titles
+        val tvdbName = sources.tvdb[epNum.toString()]?.name
+
+        return sequenceOf(
+            kitsuTitles?.enUs,
+            kitsuTitles?.en,
+            anizipTitles?.get("en"),
+            tvdbName,
+            kitsuTitles?.enJp,
+            anizipTitles?.get("en_jp"),
+            sources.anidb[epNum.toString()],
+            kitsuTitles?.jaJp,
+            anizipTitles?.get("ja"),
+        ).firstOrNull { !it.isNullOrBlank() }.orEmpty()
     }
 
-    private fun episodeAirDate(epNum: Int): Long {
-        currentAniZipEpisodes[epNum.toString()]?.airDate?.let { return parseDate(it) }
-        currentKitsuEpisodes[epNum]?.airDate?.let { return parseDate(it) }
-        currentTvdbEpisodes[epNum.toString()]?.airDate?.let { return parseDate(it) }
+    private fun episodeAirDate(epNum: Int, sources: EpisodeSources): Long {
+        sources.anizipEpisodes[epNum.toString()]?.airDate?.let { return parseDate(it) }
+        sources.kitsu[epNum]?.airDate?.let { return parseDate(it) }
+        sources.tvdb[epNum.toString()]?.airDate?.let { return parseDate(it) }
         return 0L
     }
 
-    private fun episodeOverview(epNum: Int): String? {
-        currentAniZipEpisodes[epNum.toString()]?.overview
+    private fun episodeOverview(epNum: Int, sources: EpisodeSources): String? {
+        sources.kitsu[epNum]?.synopsis
             ?.takeIf { it.isNotBlank() }?.let { return it }
-        currentTvdbEpisodes[epNum.toString()]?.overview
+        sources.anizipEpisodes[epNum.toString()]?.overview
+            ?.takeIf { it.isNotBlank() }?.let { return it }
+        sources.tvdb[epNum.toString()]?.overview
             ?.takeIf { it.isNotBlank() }?.let { return it }
         return null
     }
 
-    private fun episodeImage(epNum: Int): String? {
-        currentAniZipEpisodes[epNum.toString()]?.image
+    private fun episodeImage(epNum: Int, sources: EpisodeSources): String? {
+        sources.kitsu[epNum]?.thumbnail?.original
             ?.takeIf { it.isNotBlank() }?.let { return it }
-        currentKitsuEpisodes[epNum]?.thumbnail?.original
+        sources.anizipEpisodes[epNum.toString()]?.image
             ?.takeIf { it.isNotBlank() }?.let { return it }
-        currentTvdbEpisodes[epNum.toString()]?.imageUrl
+        sources.tvdb[epNum.toString()]?.imageUrl
             ?.takeIf { it.isNotBlank() }?.let { return buildTvdbImageUrl(it) }
         return null
     }
-
-    // AniDB episode titles (filled lazily; cleared per episode-list build)
-    private var anidbTitleCache: Map<String, String> = emptyMap()
 
     /**
      * AniDB lookup only when enabled, an id is known, and the other sources
      * left titles missing. AniDB is heavily rate limited, so this is a
      * last-resort fill.
      */
-    private fun fetchAniDbTitlesIfNeeded(details: KitsuApi.AnimeDetails): Map<String, String> {
-        anidbTitleCache = emptyMap()
+    private fun fetchAniDbTitlesIfNeeded(details: KitsuApi.AnimeDetails, partial: EpisodeSources): Map<String, String> {
         if (!preferences.getBoolean(PREF_USE_ANIDB, PREF_USE_ANIDB_DEFAULT)) return emptyMap()
 
-        val missingTitles = (1..(details.anime.episodeCount ?: 0)).count { episodeTitle(it).isBlank() }
+        val expected = maxOf(details.anime.episodeCount ?: 0, partial.anizipEpisodes.size)
+        val missingTitles = (1..expected).count { episodeTitle(it, partial).isBlank() }
         if (missingTitles == 0) return emptyMap()
 
-        val anidbId = currentIdMappings?.aniDbId
+        val anidbId = partial.anizip?.mappings?.aniDbId
             ?: details.mappings["anidb"]?.toLongOrNull()
         if (anidbId == null || anidbId <= 0) return emptyMap()
 
         return try {
-            runBlocking { AniDbApi.getEpisodeTitles(client, anidbId) }.also {
-                anidbTitleCache = it
-            }
+            runBlocking { AniDbApi.getEpisodeTitles(client, anidbId) }
         } catch (e: Exception) {
             emptyMap()
         }
     }
 
-    private fun buildFallbackEpisodeList(): List<SEpisode> {
-        val anizipEpisodes = currentAniZipEpisodes
+    private fun buildFallbackEpisodeList(anizip: AniZipResponse): List<SEpisode> {
+        val anizipEpisodes = anizip.episodes ?: emptyMap()
         if (anizipEpisodes.isEmpty()) return emptyList()
 
         val episodeCount = anizipEpisodes.keys.mapNotNull { it.toIntOrNull() }.maxOrNull() ?: return emptyList()
         val metadataStatus = "AniZip: ${anizipEpisodes.size} eps"
         val now = System.currentTimeMillis()
 
-        val mappings = currentIdMappings
+        val mappings = anizip.mappings
         val imdbPart = mappings?.imdbId?.let { "imdb:$it" } ?: ""
         val tmdbPart = mappings?.theMovieDbId?.let { "tmdb:$it" } ?: ""
-        val kitsuPart = currentKitsuId?.let { "kitsu:$it" } ?: ""
+        val kitsuPart = mappings?.kitsuId?.let { "kitsu:$it" } ?: ""
         val malPart = mappings?.myAnimeListId?.let { "mal:$it" } ?: ""
         val anilistPart = mappings?.aniListId?.let { "anilist:$it" } ?: ""
+        val titlePart = currentAnimeTitle.takeIf { it.isNotBlank() }
+            ?.let { "title:${it.replace("|", " ")}" } ?: ""
 
         return buildList {
             for (epNum in 1..episodeCount) {
@@ -624,7 +648,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                         summary = anizipEp?.overview?.takeIf { it.isNotBlank() }
                         preview_url = anizipEp?.image?.takeIf { it.isNotBlank() }
                         scanlator = if (epNum == 1) metadataStatus else null
-                        url = buildEpisodeUrl(epNum.toString(), anizipEp?.seasonNumber ?: 1, anizipEp?.episodeNumber ?: epNum, imdbPart, tmdbPart, kitsuPart, malPart, anilistPart)
+                        url = buildEpisodeUrl(epNum.toString(), anizipEp?.seasonNumber ?: 1, anizipEp?.episodeNumber ?: epNum, imdbPart, tmdbPart, kitsuPart, malPart, anilistPart, titlePart)
                     },
                 )
             }
@@ -639,7 +663,9 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     /**
-     * Build episode URL with all ID mappings for streaming
+     * Build episode URL with all ID mappings for streaming. The trailing
+     * title part lets the hoster/local flows re-derive the anime title from
+     * the URL instead of instance state.
      */
     private fun buildEpisodeUrl(
         epNum: String,
@@ -650,6 +676,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         kitsuPart: String,
         malPart: String,
         anilistPart: String = "",
+        titlePart: String = "",
     ): String {
         val parts = mutableListOf<String>()
         if (anilistPart.isNotBlank()) parts.add(anilistPart)
@@ -660,6 +687,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         if (tmdbPart.isNotBlank()) parts.add(tmdbPart)
         if (kitsuPart.isNotBlank()) parts.add(kitsuPart)
         if (malPart.isNotBlank()) parts.add(malPart)
+        if (titlePart.isNotBlank()) parts.add(titlePart)
         return parts.joinToString("|")
     }
 
@@ -686,6 +714,9 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val episodeNum = parts["ep"] ?: "1"
         val isMovie = episodeNum == "movie" || episodeNum == "0"
         currentAnilistId = parts["anilist"]?.toIntOrNull() ?: 0
+        // Title travels in the URL so concurrent browsing can't leak another
+        // anime's title into local-file matching or filler lookups
+        parts["title"]?.takeIf { it.isNotBlank() }?.let { currentAnimeTitle = it }
         currentIsMovie = isMovie
         currentEpisodeNumber = episodeNum.toIntOrNull() ?: parts["epInSeason"]?.toIntOrNull()
         currentSeasonNumber = parts["season"]?.toIntOrNull()
@@ -1215,6 +1246,10 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     companion object {
+        // Max episode count for which Kitsu's 20-per-page episode endpoint is
+        // paged through when AniZip's English coverage is incomplete
+        private const val KITSU_EPISODE_FETCH_CAP = 260
+
         private const val PREF_MANIFEST_URL = "manifest_url"
         private const val PREF_TITLE_LANG = "title_language"
         private const val PREF_TITLE_LANG_DEFAULT = "english"

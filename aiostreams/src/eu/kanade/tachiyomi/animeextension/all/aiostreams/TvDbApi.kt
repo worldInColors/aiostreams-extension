@@ -10,8 +10,11 @@ import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
- * TVDB API v4 client for episode metadata
- * Requires an API key to be configured
+ * TVDB API v4 client — optional enrichment for episode metadata.
+ *
+ * The TVDB series id is resolved without a key (from Kitsu mappings / AniZip),
+ * but reading data from TVDB itself requires an API key from thetvdb.com.
+ * Responses are English by default.
  */
 object TvDbApi {
 
@@ -20,35 +23,59 @@ object TvDbApi {
     private var authToken: String? = null
     private var tokenExpiry: Long = 0
 
+    // Shared Json instance - isLenient needed because TVDB returns some numbers as strings
+    private val json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+        coerceInputValues = true
+    }
+
     @Serializable
     data class LoginResponse(
         val status: String? = null,
-        val data: TokenData? = null
+        val data: TokenData? = null,
     )
 
     @Serializable
     data class TokenData(
-        val token: String? = null
+        val token: String? = null,
     )
 
     @Serializable
-    data class SeriesResponse(
+    data class SeriesExtendedResponse(
         val status: String? = null,
-        val data: SeriesData? = null
+        val data: SeriesExtendedData? = null,
     )
 
     @Serializable
-    data class SeriesData(
+    data class SeriesExtendedData(
         val id: Long? = null,
         val name: String? = null,
-        @SerialName("episodes") val episodes: List<EpisodeData>? = null
+        val overview: String? = null,
+        val image: String? = null,
+        @SerialName("episodes") val episodes: List<EpisodeData>? = null,
+        @SerialName("remoteIds") val remoteIds: List<RemoteId>? = null,
+    )
+
+    /** /series/{id}/episodes/default returns data as an object wrapping the episode list. */
+    @Serializable
+    data class EpisodesDefaultResponse(
+        val status: String? = null,
+        val data: EpisodesDefaultData? = null,
+        val links: LinksData? = null,
     )
 
     @Serializable
-    data class EpisodesResponse(
-        val status: String? = null,
-        val data: List<EpisodeData>? = null,
-        val links: LinksData? = null
+    data class EpisodesDefaultData(
+        @SerialName("episodes") val episodes: List<EpisodeData>? = null,
+        val seasons: List<SeasonData>? = null,
+    )
+
+    @Serializable
+    data class SeasonData(
+        val id: Long? = null,
+        val name: String? = null,
+        val number: Int? = null,
     )
 
     @Serializable
@@ -60,57 +87,46 @@ object TvDbApi {
         val name: String? = null,
         val overview: String? = null,
         @SerialName("aired") val airDate: String? = null,
+        @SerialName("runtime") val runtime: Int? = null,
         @SerialName("image") val imageUrl: String? = null,
-        @SerialName("runtime") val runtime: Int? = null
+        val isMovie: Int? = null,
     )
 
     @Serializable
     data class LinksData(
+        val first: Int? = null,
         val prev: Int? = null,
         val next: Int? = null,
-        @SerialName("total_items") val totalItems: Int? = null
+        val last: Int? = null,
+        @SerialName("total_items") val totalItems: Long? = null,
     )
 
     @Serializable
     data class SearchResponse(
         val status: String? = null,
-        val data: List<SearchResult>? = null
+        val data: List<SearchResult>? = null,
     )
 
     @Serializable
     data class SearchResult(
-        val id: Long? = null,
+        val id: String? = null,
         val name: String? = null,
         val overview: String? = null,
         @SerialName("primary_type") val primaryType: String? = null,
-        @SerialName("tvdb_id") val tvdbId: Long? = null,
+        @SerialName("tvdb_id") val tvdbId: String? = null,
         @SerialName("imdb_id") val imdbId: String? = null,
-        val type: String? = null
-    )
-
-    @Serializable
-    data class SeriesExtendedResponse(
-        val status: String? = null,
-        val data: SeriesExtendedData? = null
-    )
-
-    @Serializable
-    data class SeriesExtendedData(
-        val id: Long? = null,
-        val name: String? = null,
-        @SerialName("episodes") val episodes: List<EpisodeData>? = null,
-        @SerialName("remote_ids") val remoteIds: List<RemoteId>? = null
+        val type: String? = null,
     )
 
     @Serializable
     data class RemoteId(
         val id: String? = null,
-        val type: Int? = null,  // 1=IMDB, 2=TMDB, 3=TvDB, etc.
-        val sourceName: String? = null
+        val type: Int? = null, // 2=IMDB, 4=TMDB, ...
+        val sourceName: String? = null,
     )
 
     /**
-     * Login to TVDB API and get auth token
+     * Login to TVDB API and get a bearer token.
      */
     fun login(client: OkHttpClient, apiKey: String): Boolean {
         return try {
@@ -120,16 +136,17 @@ object TvDbApi {
                 .url(url)
                 .post(body.toRequestBody("application/json".toMediaType()))
                 .build()
-            
-            val response = client.newCall(request).execute()
-            if (response.isSuccessful) {
-                val loginResponse = Json { ignoreUnknownKeys = true }.decodeFromString<LoginResponse>(response.body.string())
-                authToken = loginResponse.data?.token
-                // Token expires in 30 days, but refresh weekly
-                tokenExpiry = System.currentTimeMillis() + (7 * 24 * 60 * 60 * 1000L)
-                true
-            } else {
-                false
+
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val loginResponse = json.decodeFromString<LoginResponse>(response.body.string())
+                    authToken = loginResponse.data?.token
+                    // Token itself is valid ~30 days; refresh weekly
+                    tokenExpiry = System.currentTimeMillis() + (7 * 24 * 60 * 60 * 1000L)
+                    authToken != null
+                } else {
+                    false
+                }
             }
         } catch (e: Exception) {
             false
@@ -137,8 +154,11 @@ object TvDbApi {
     }
 
     /**
-     * Get auth headers
+     * True when a token is cached and not close to expiring.
      */
+    fun isAuthenticated(): Boolean =
+        authToken != null && System.currentTimeMillis() < tokenExpiry
+
     private fun getHeaders(): Headers {
         return Headers.Builder()
             .add("Authorization", "Bearer ${authToken ?: ""}")
@@ -146,135 +166,105 @@ object TvDbApi {
             .build()
     }
 
-    /**
-     * Search for a series by name
-     */
-    fun searchSeries(client: OkHttpClient, apiKey: String, query: String): List<SearchResult> {
-        ensureLoggedIn(client, apiKey)
-        
-        return try {
-            val url = "$API_URL/search?query=${java.net.URLEncoder.encode(query, "UTF-8")}&type=series"
-            val response = client.newCall(GET(url, getHeaders())).execute()
-            
-            if (response.isSuccessful) {
-                val searchResponse = Json { ignoreUnknownKeys = true }.decodeFromString<SearchResponse>(response.body.string())
-                searchResponse.data ?: emptyList()
-            } else {
-                emptyList()
-            }
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
-
-    /**
-     * Get series info by TVDB ID with all episodes
-     */
-    fun getSeriesExtended(client: OkHttpClient, apiKey: String, tvdbId: Long): SeriesExtendedData? {
-        ensureLoggedIn(client, apiKey)
-        
-        return try {
-            val url = "$API_URL/series/$tvdbId/extended?meta=episodes"
-            val response = client.newCall(GET(url, getHeaders())).execute()
-            
-            if (response.isSuccessful) {
-                val seriesResponse = Json { ignoreUnknownKeys = true }.decodeFromString<SeriesExtendedResponse>(response.body.string())
-                seriesResponse.data
-            } else {
-                null
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Get all episodes for a series (handles pagination)
-     */
-    fun getAllEpisodes(client: OkHttpClient, apiKey: String, tvdbId: Long): List<EpisodeData> {
-        ensureLoggedIn(client, apiKey)
-        
-        val allEpisodes = mutableListOf<EpisodeData>()
-        var page = 1
-        
-        try {
-            // First try extended endpoint which includes all episodes
-            val extended = getSeriesExtended(client, apiKey, tvdbId)
-            if (!extended?.episodes.isNullOrEmpty()) {
-                return extended!!.episodes!!
-            }
-            
-            // Fallback to paginated endpoint
-            while (true) {
-                val url = "$API_URL/series/$tvdbId/episodes/default?page=$page"
-                val response = client.newCall(GET(url, getHeaders())).execute()
-                
-                if (!response.isSuccessful) break
-                
-                val episodesResponse = Json { ignoreUnknownKeys = true }.decodeFromString<EpisodesResponse>(response.body.string())
-                val episodes = episodesResponse.data ?: break
-                
-                allEpisodes.addAll(episodes)
-                
-                if (episodesResponse.links?.next == null) break
-                page = episodesResponse.links.next
-            }
-        } catch (e: Exception) {
-            // Return what we have
-        }
-        
-        return allEpisodes
-    }
-
-    /**
-     * Find TVDB ID from IMDB or other external IDs
-     */
-    fun findTvDbId(client: OkHttpClient, apiKey: String, imdbId: String): Long? {
-        ensureLoggedIn(client, apiKey)
-        
-        return try {
-            val url = "$API_URL/search/remoteid?id=$imdbId"
-            val response = client.newCall(GET(url, getHeaders())).execute()
-            
-            if (response.isSuccessful) {
-                val searchResponse = Json { ignoreUnknownKeys = true }.decodeFromString<SearchResponse>(response.body.string())
-                searchResponse.data?.firstOrNull()?.tvdbId
-            } else {
-                null
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Ensure we have a valid auth token
-     */
     private fun ensureLoggedIn(client: OkHttpClient, apiKey: String) {
-        if (authToken == null || System.currentTimeMillis() > tokenExpiry) {
+        if (!isAuthenticated()) {
             login(client, apiKey)
         }
     }
 
     /**
-     * Convert episode list to a map keyed by episode number
+     * Get a series with all of its episodes in one call.
+     */
+    fun getSeriesExtended(client: OkHttpClient, apiKey: String, tvdbId: Long): SeriesExtendedData? {
+        ensureLoggedIn(client, apiKey)
+        if (authToken == null) return null
+
+        return try {
+            val url = "$API_URL/series/$tvdbId/extended?meta=episodes"
+            client.newCall(GET(url, getHeaders())).execute().use { response ->
+                if (response.isSuccessful) {
+                    json.decodeFromString<SeriesExtendedResponse>(response.body.string()).data
+                } else {
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Get all episodes for a series, trying the extended endpoint first and
+     * falling back to the paginated default episode order.
+     */
+    fun getAllEpisodes(client: OkHttpClient, apiKey: String, tvdbId: Long): List<EpisodeData> {
+        val extended = getSeriesExtended(client, apiKey, tvdbId)
+        if (!extended?.episodes.isNullOrEmpty()) {
+            return extended!!.episodes!!
+        }
+
+        val allEpisodes = mutableListOf<EpisodeData>()
+        var page = 1
+        try {
+            while (page in 1..100) {
+                val url = "$API_URL/series/$tvdbId/episodes/default?page=$page"
+                val body = client.newCall(GET(url, getHeaders())).execute().use { response ->
+                    if (response.isSuccessful) response.body.string() else return@use null
+                } ?: break
+
+                val parsed = json.decodeFromString<EpisodesDefaultResponse>(body)
+                val episodes = parsed.data?.episodes ?: break
+                allEpisodes.addAll(episodes)
+
+                if (parsed.links?.next == null) break
+                page = parsed.links.next
+            }
+        } catch (e: Exception) {
+            // Return what we have
+        }
+        return allEpisodes
+    }
+
+    /**
+     * Find a TVDB series id from an external id (e.g. an IMDB id).
+     */
+    fun findTvDbId(client: OkHttpClient, apiKey: String, imdbId: String): Long? {
+        ensureLoggedIn(client, apiKey)
+        if (authToken == null) return null
+
+        return try {
+            val url = "$API_URL/search/remoteid?id=$imdbId"
+            client.newCall(GET(url, getHeaders())).execute().use { response ->
+                if (response.isSuccessful) {
+                    json.decodeFromString<SearchResponse>(response.body.string())
+                        .data?.firstOrNull()?.tvdbId?.toLongOrNull()
+                } else {
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Index episodes by absolute number (fallback: season 1 episode number,
+     * then "S{season}E{episode}") so callers can look up by episode number.
      */
     fun episodesToMap(episodes: List<EpisodeData>, useAbsoluteNumbering: Boolean = true): Map<String, EpisodeData> {
         val map = mutableMapOf<String, EpisodeData>()
-        
+
         episodes.forEach { ep ->
-            if (useAbsoluteNumbering && ep.absoluteNumber != null) {
-                map[ep.absoluteNumber.toString()] = ep
-            } else if (ep.episodeNumber != null && ep.seasonNumber != null) {
-                // Use season/episode format as key
-                if (ep.seasonNumber == 1) {
+            when {
+                useAbsoluteNumbering && ep.absoluteNumber != null ->
+                    map[ep.absoluteNumber.toString()] = ep
+                ep.seasonNumber == 1 && ep.episodeNumber != null ->
                     map[ep.episodeNumber.toString()] = ep
-                } else {
+                ep.seasonNumber != null && ep.episodeNumber != null ->
                     map["S${ep.seasonNumber}E${ep.episodeNumber}"] = ep
-                }
             }
         }
-        
+
         return map
     }
 }

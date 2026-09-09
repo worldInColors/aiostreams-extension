@@ -31,3 +31,6 @@ Thumbs.db
 *.log
 
 ignore/
+# Local reference / scratch
+aniyomi/
+test_*.py

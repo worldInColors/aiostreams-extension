@@ -96,7 +96,7 @@ jobs:
                   "name": source_name,
                   "lang": source_lang,
                   "id": source_id,
-                  "baseUrl": "https://graphql.anilist.co"
+                  "baseUrl": "https://kitsu.app"
               }]
           }]
 

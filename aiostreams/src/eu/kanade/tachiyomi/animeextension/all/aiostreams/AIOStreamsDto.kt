@@ -5,7 +5,7 @@ import kotlinx.serialization.Serializable
 
 /**
  * AniZip Response - https://api.ani.zip
- * Provides episode metadata and ID mappings
+ * Provides episode metadata and ID mappings (accepts kitsu_id, anilist_id, mal_id)
  */
 @Serializable
 data class AniZipResponse(
@@ -67,157 +67,7 @@ data class AniZipMappings(
     @SerialName("imdb_id")
     val imdbId: String? = null,
     @SerialName("themoviedb_id")
-    val theMovieDbId: String? = null,
-)
-
-/**
- * AniList GraphQL Response structures
- */
-@Serializable
-data class AniListMediaResponse(
-    val data: AniListMediaData? = null,
-)
-
-@Serializable
-data class AniListMediaData(
-    val Media: AniListMedia? = null,
-)
-
-@Serializable
-data class AniListSearchResponse(
-    val data: AniListSearchData? = null,
-)
-
-@Serializable
-data class AniListSearchData(
-    val Page: AniListPage? = null,
-)
-
-@Serializable
-data class AniListPage(
-    val media: List<AniListMedia?>? = null,
-    val pageInfo: AniListPageInfo? = null,
-)
-
-@Serializable
-data class AniListPageInfo(
-    val hasNextPage: Boolean? = null,
-)
-
-@Serializable
-data class AniListMedia(
-    val id: Int? = null,
-    val title: AniListTitle? = null,
-    val coverImage: AniListCover? = null,
-    val bannerImage: String? = null,
-    val description: String? = null,
-    val episodes: Int? = null,
-    val status: String? = null,
-    val season: String? = null,
-    val seasonYear: Int? = null,
-    val format: String? = null,
-    val genres: List<String?>? = null,
-    val tags: List<AniListTag?>? = null,
-    val averageScore: Int? = null,
-    val meanScore: Int? = null,
-    val popularity: Int? = null,
-    val studios: AniListStudioConnection? = null,
-    val startDate: AniListFuzzyDate? = null,
-    val endDate: AniListFuzzyDate? = null,
-    val nextAiringEpisode: AniListAiringSchedule? = null,
-    val airingSchedule: AniListAiringScheduleConnection? = null,
-    val relations: AniListRelationConnection? = null,
-    val recommendations: AniListRecommendationConnection? = null,
-    val isAdult: Boolean? = null,
-    val countryOfOrigin: String? = null,
-    val external: List<AniListExternalLink?>? = null,
-)
-
-@Serializable
-data class AniListExternalLink(
-    val id: String? = null,
-    val site: String? = null,
-    val url: String? = null,
-)
-
-@Serializable
-data class AniListTitle(
-    val romaji: String? = null,
-    val english: String? = null,
-    val native: String? = null,
-)
-
-@Serializable
-data class AniListCover(
-    val extraLarge: String? = null,
-    val large: String? = null,
-    val medium: String? = null,
-    val color: String? = null,
-)
-
-@Serializable
-data class AniListTag(
-    val id: Int? = null,
-    val name: String? = null,
-    val description: String? = null,
-    val rank: Int? = null,
-    val isMediaSpoiler: Boolean? = null,
-)
-
-@Serializable
-data class AniListStudioConnection(
-    val nodes: List<AniListStudio?>? = null,
-)
-
-@Serializable
-data class AniListStudio(
-    val id: Int? = null,
-    val name: String? = null,
-    val isAnimationStudio: Boolean? = null,
-)
-
-@Serializable
-data class AniListFuzzyDate(
-    val year: Int? = null,
-    val month: Int? = null,
-    val day: Int? = null,
-)
-
-@Serializable
-data class AniListAiringSchedule(
-    val id: Int? = null,
-    val airingAt: Long? = null,
-    val timeUntilAiring: Long? = null,
-    val episode: Int? = null,
-)
-
-@Serializable
-data class AniListAiringScheduleConnection(
-    val nodes: List<AniListAiringSchedule?>? = null,
-)
-
-@Serializable
-data class AniListRelationConnection(
-    val edges: List<AniListRelationEdge?>? = null,
-)
-
-@Serializable
-data class AniListRelationEdge(
-    val id: Int? = null,
-    val relationType: String? = null,
-    val node: AniListMedia? = null,
-)
-
-@Serializable
-data class AniListRecommendationConnection(
-    val nodes: List<AniListRecommendation?>? = null,
-)
-
-@Serializable
-data class AniListRecommendation(
-    val id: Int? = null,
-    val rating: Int? = null,
-    val mediaRecommendation: AniListMedia? = null,
+    val theMovieDbId: Long? = null,
 )
 
 /**
@@ -280,17 +130,4 @@ data class AniDbRatings(
     val permanent: Double? = null,
     val temporary: Double? = null,
     val review: Double? = null,
-)
-
-/**
- * Season data for seasons support
- */
-@Serializable
-data class SeasonInfo(
-    val anilistId: Int,
-    val seasonNumber: Double,
-    val title: String,
-    val thumbnailUrl: String? = null,
-    val relationType: String? = null,
-    val episodeCount: Int? = null,
 )

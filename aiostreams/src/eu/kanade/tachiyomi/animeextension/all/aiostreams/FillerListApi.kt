@@ -1,26 +1,65 @@
 package eu.kanade.tachiyomi.animeextension.all.aiostreams
 
 import eu.kanade.tachiyomi.network.GET
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Response
-import org.jsoup.Jsoup
 
 /**
- * Scrapes animefillerlist.com to get filler episode data
+ * Fetches filler episode data from chaiwala-anime API
+ * Falls back to scraping animefillerlist.com if API fails
  */
 object FillerListApi {
 
-    private const val BASE_URL = "https://www.animefillerlist.com/shows"
+    private const val API_URL = "https://filler-list.chaiwala-anime.workers.dev"
+    private const val SCRAPE_URL = "https://www.animefillerlist.com/shows"
+
+    private val json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+        coerceInputValues = true
+    }
+
+    @Serializable
+    data class FillerApiResponse(
+        val animeName: String? = null,
+        val fillerEpisodes: List<Int>? = null,
+        val cannonEpisodes: List<Int>? = null,
+        val animecanonsEp: List<Int>? = null
+    )
 
     /**
-     * Fetches filler episodes for an anime
+     * Fetches filler episodes for an anime using the new API
      * @param client OkHttp client to use
-     * @param animeName The anime name as used in animefillerlist.com URL (e.g., "naruto", "one-piece")
+     * @param animeName The anime name as slug (e.g., "naruto", "one-piece")
      * @return Set of episode numbers that are filler, or empty set if not found
      */
     fun getFillerEpisodes(client: OkHttpClient, animeName: String): Set<Int> {
+        // Try new API first
         return try {
-            val response = client.newCall(GET("$BASE_URL/$animeName")).execute()
+            val response = client.newCall(GET("$API_URL/$animeName")).execute()
+            if (response.isSuccessful) {
+                val apiResponse = json.decodeFromString<FillerApiResponse>(response.body.string())
+                val fillers = apiResponse.fillerEpisodes?.toSet() ?: emptySet()
+                if (fillers.isNotEmpty()) {
+                    return fillers
+                }
+            }
+            // Fallback to scraping if API returns empty
+            getFillerEpisodesScrape(client, animeName)
+        } catch (e: Exception) {
+            // Fallback to scraping on error
+            getFillerEpisodesScrape(client, animeName)
+        }
+    }
+
+    /**
+     * Fallback: Scrapes animefillerlist.com to get filler episode data
+     */
+    private fun getFillerEpisodesScrape(client: OkHttpClient, animeName: String): Set<Int> {
+        return try {
+            val response = client.newCall(GET("$SCRAPE_URL/$animeName")).execute()
             if (response.isSuccessful) {
                 parseFillerEpisodes(response)
             } else {
@@ -37,7 +76,24 @@ object FillerListApi {
      */
     fun getFillerAndMixedEpisodes(client: OkHttpClient, animeName: String): Pair<Set<Int>, Set<Int>> {
         return try {
-            val response = client.newCall(GET("$BASE_URL/$animeName")).execute()
+            val response = client.newCall(GET("$API_URL/$animeName")).execute()
+            if (response.isSuccessful) {
+                val apiResponse = json.decodeFromString<FillerApiResponse>(response.body.string())
+                val fillers = apiResponse.fillerEpisodes?.toSet() ?: emptySet()
+                // Use animecanonsEp as mixed if available
+                val mixed = apiResponse.animecanonsEp?.toSet() ?: emptySet()
+                fillers to mixed
+            } else {
+                getFillerAndMixedEpisodesScrape(client, animeName)
+            }
+        } catch (e: Exception) {
+            getFillerAndMixedEpisodesScrape(client, animeName)
+        }
+    }
+
+    private fun getFillerAndMixedEpisodesScrape(client: OkHttpClient, animeName: String): Pair<Set<Int>, Set<Int>> {
+        return try {
+            val response = client.newCall(GET("$SCRAPE_URL/$animeName")).execute()
             if (response.isSuccessful) {
                 parseFillerAndMixedEpisodes(response)
             } else {
@@ -50,16 +106,14 @@ object FillerListApi {
 
     private fun parseFillerEpisodes(response: Response): Set<Int> {
         val html = response.body.string()
-        val doc = Jsoup.parse(html)
+        val doc = org.jsoup.Jsoup.parse(html)
         val fillerEpisodes = mutableSetOf<Int>()
 
         // Parse filler episodes - look for span.Episodes after the Label
         doc.select("div.filler span.Label").forEach { element ->
             if (element.text().trim() == "Filler Episodes:") {
-                // The episodes are in the next sibling span.Episodes
                 val episodesSpan = element.nextElementSibling()
                 if (episodesSpan != null && episodesSpan.tagName() == "span") {
-                    // Get all episode numbers from <a> tags
                     episodesSpan.select("a").forEach { link ->
                         val epNum = link.text().trim().toIntOrNull()
                         if (epNum != null) {
@@ -70,7 +124,6 @@ object FillerListApi {
             }
         }
 
-        // Also try direct text parsing as fallback
         if (fillerEpisodes.isEmpty()) {
             doc.select("div.filler span.Episodes").forEach { element ->
                 val episodeText = element.text().trim()
@@ -83,11 +136,10 @@ object FillerListApi {
 
     private fun parseFillerAndMixedEpisodes(response: Response): Pair<Set<Int>, Set<Int>> {
         val html = response.body.string()
-        val doc = Jsoup.parse(html)
+        val doc = org.jsoup.Jsoup.parse(html)
         val fillerEpisodes = mutableSetOf<Int>()
         val mixedEpisodes = mutableSetOf<Int>()
 
-        // Parse filler episodes
         doc.select("div.filler span.Label").forEach { element ->
             if (element.text().trim() == "Filler Episodes:") {
                 val episodesSpan = element.nextElementSibling()
@@ -102,7 +154,6 @@ object FillerListApi {
             }
         }
 
-        // Parse mixed canon/filler episodes
         doc.select("div.mixed_canon\\/filler span.Label").forEach { element ->
             if (element.text().trim() == "Mixed Canon/Filler Episodes:") {
                 val episodesSpan = element.nextElementSibling()
@@ -120,18 +171,13 @@ object FillerListApi {
         return fillerEpisodes to mixedEpisodes
     }
 
-    /**
-     * Parses episode ranges like "1-5, 7, 10-12" into individual episode numbers
-     */
     private fun parseEpisodeRanges(rangeText: String): Set<Int> {
         val episodes = mutableSetOf<Int>()
-        
         if (rangeText.isBlank()) return episodes
 
         rangeText.split(",").forEach { part ->
             val trimmed = part.trim()
             if (trimmed.contains("-")) {
-                // Range like "1-5"
                 val rangeParts = trimmed.split("-")
                 if (rangeParts.size == 2) {
                     val start = rangeParts[0].trim().toIntOrNull()
@@ -143,7 +189,6 @@ object FillerListApi {
                     }
                 }
             } else {
-                // Single episode
                 trimmed.toIntOrNull()?.let { episodes.add(it) }
             }
         }
@@ -152,7 +197,7 @@ object FillerListApi {
     }
 
     /**
-     * Converts an anime title to a likely animefillerlist.com URL slug
+     * Converts an anime title to a likely URL slug
      * e.g., "Naruto Shippuden" -> "naruto-shippuden"
      */
     fun titleToSlug(title: String): String {

@@ -73,47 +73,56 @@ Output APK: `aiostreams/build/outputs/apk/`
 
 ### Core Features
 
-- **AniList Integration**: Browse and search anime using AniList's comprehensive database
+- **Kitsu Integration**: Browse, search, and detail pages powered by [Kitsu](https://kitsu.app) — no API key needed
+- **Infinite scrolling browse**: Popular and Latest listings page through Kitsu until exhausted
+- **Search filters**: Sort (popularity/rating/newest/trending), season, year, format, status, age rating, and genre checkboxes
 - **Multi-Source Streaming**: Aggregates streams from multiple debrid services
 - **SeaDex Integration**: Highlights and prioritizes "best" releases according to SeaDex
 
 ### Episode Metadata
 
-- **AniZip Mappings**: Uses ani.zip for accurate episode titles and metadata
-- **AniDB Support** (Optional): Fetch additional episode titles from AniDB when available
-- **Multi-Language Titles**: Falls back through English → Romaji → Native → x-jat
+- **AniZip Mappings**: Uses ani.zip for accurate episode titles, thumbnails, and cross-service IDs (Kitsu/MAL/AniList/IMDB/TMDB/TVDB)
+- **Kitsu fallback**: Full episode list from Kitsu when AniZip has no data
+- **TVDB enrichment** (optional): Add a thetvdb.com API key to fill gaps in titles/overviews/thumbnails
+- **AniDB Support** (Optional): Fill missing episode titles from AniDB
+- **Title language preference**: English / Romaji / Native
 
 ### Seasons Support
 
 - **Seasons Mode**: View related anime (sequels, prequels, side stories) as separate seasons
 - Enable in extension settings to organize multi-season anime better
-- AniList relations are used to determine season structure
+- Kitsu media relationships are used to determine season structure
 
 ### Settings
 
-| Setting                      | Description                                |
-| ---------------------------- | ------------------------------------------ |
-| Manifest URL                 | Your AIOStreams configuration URL          |
-| ID Priority                  | Order of ID types to use for stream lookup |
-| Use Seasons Mode             | Display related anime as seasons           |
-| Use AniDB for Episode Titles | Fetch additional titles from AniDB         |
-| Show P2P/Torrent Streams     | Show torrent streams (for Anikku users)    |
-| Highlight SeaDex Best        | Mark best releases with ⭐                 |
-| Move SeaDex Best to Top      | Prioritize best releases                   |
+| Setting                      | Description                                                          |
+| ---------------------------- | -------------------------------------------------------------------- |
+| Manifest URL                 | Your AIOStreams configuration URL                                    |
+| Title Language               | English, Romaji, or Native titles from Kitsu                         |
+| ID Priority                  | Order of ID types to use for stream lookup                           |
+| Use Seasons Mode             | Display related anime as seasons                                     |
+| Use AniDB for Episode Titles | Fill missing episode titles from AniDB                               |
+| TVDB API Key (optional)      | Enrich episode metadata from thetvdb.com                             |
+| Show P2P/Torrent Streams     | Show torrent streams (for Anikku users)                              |
+| Highlight SeaDex Best        | Mark best releases with ⭐                                           |
+| Move SeaDex Best to Top      | Prioritize best releases                                             |
 
 ## Auto-Update
 
 Users will automatically receive updates when you:
 
-1. Increment `extVersionCode` in `aiostreams/build.gradle`
-2. Push a new tag (e.g., `v4`)
-3. GitHub Actions builds and deploys to the `repo` branch
+1. **Increment `extVersionCode` in `aiostreams/build.gradle`** — the app compares this number against the installed extension; if it doesn't go up, users never see an update prompt
+2. Push a new tag (e.g., `v10`) — the build workflow only triggers on `v*` tags, not on pushes to `main`
+3. GitHub Actions builds and deploys to the `repo` branch and purges the jsDelivr cache
+
+Note: the app itself caches the repo index for ~a day; users can pull-to-refresh the extensions screen to check immediately.
 
 ## Credits
 
 - [AIOStreams](https://github.com/Viren070/AIOStreams) for the original addon
-- [AniList](https://anilist.co) for the anime database API
+- [Kitsu](https://kitsu.app) for the anime database API
 - [AniZip](https://ani.zip) for episode mappings and metadata
+- [TheTVDB](https://thetvdb.com) for optional episode metadata enrichment
 - [AniDB](https://anidb.net) for additional episode information
 - [SeaDex](https://releases.moe) for best release recommendations
 - Big thanks to the maintainers of public AIOStreams instances

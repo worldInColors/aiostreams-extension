@@ -396,18 +396,11 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
         // Kitsu is the primary episode-metadata source: its English titles,
         // synopses and thumbnails cover long shows far better than AniZip
-        // (AniZip's Naruto entry has no titles at all and synopses only
-        // through ep 48). Kitsu pages at 20/request though, so very long
-        // shows stay AniZip-primary (AniZip covers them in one request).
-        val totalEpisodes = details.anime.episodeCount ?: 0
-        val knownEpisodes = maxOf(totalEpisodes, anizipEpisodes.size)
-        val kitsuEpisodes = if (
-            anizipEpisodes.isEmpty() || knownEpisodes <= KITSU_EPISODE_FETCH_CAP
-        ) {
-            KitsuApi.fetchEpisodes(client, details.id)
-        } else {
-            emptyMap()
-        }
+        // (AniZip's Naruto and One Piece entries have no English titles at
+        // all). Kitsu pages at 20/request, so very long shows cost dozens of
+        // sequential requests — fetched anyway since AniZip has nothing
+        // better to offer there; the app caches the resulting list.
+        val kitsuEpisodes = KitsuApi.fetchEpisodes(client, details.id)
 
         val tvdbEpisodes = loadTvdbEpisodes(details, anizip)
         val partial = EpisodeSources(anizip, kitsuEpisodes, tvdbEpisodes, emptyMap())
@@ -571,12 +564,20 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
     private fun episodeOverview(epNum: Int, sources: EpisodeSources): String? {
         sources.kitsu[epNum]?.synopsis
-            ?.takeIf { it.isNotBlank() }?.let { return it }
+            ?.takeUnless { it.isBlank() || isJapaneseText(it) }?.let { return it }
         sources.anizipEpisodes[epNum.toString()]?.overview
-            ?.takeIf { it.isNotBlank() }?.let { return it }
+            ?.takeUnless { it.isBlank() || isJapaneseText(it) }?.let { return it }
         sources.tvdb[epNum.toString()]?.overview
-            ?.takeIf { it.isNotBlank() }?.let { return it }
+            ?.takeUnless { it.isBlank() || isJapaneseText(it) }?.let { return it }
         return null
+    }
+
+    /** True when a text blob is mostly CJK — used to skip Japanese-language
+     *  overviews so the next English source gets a chance. */
+    private fun isJapaneseText(text: String): Boolean {
+        if (text.isEmpty()) return false
+        val cjk = text.count { it.code > 0x2E7F }
+        return cjk * 100 / text.length > 30
     }
 
     private fun episodeImage(epNum: Int, sources: EpisodeSources): String? {

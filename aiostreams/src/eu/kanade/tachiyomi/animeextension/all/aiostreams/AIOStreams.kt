@@ -61,22 +61,28 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     // ============================== Popular ===============================
 
     override fun popularAnimeRequest(page: Int): Request {
-        currentListingTrending = false
         return GET(KitsuApi.popularUrl(page), headers)
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
-        val parsed = KitsuApi.parseAnimePage(response.body.string(), currentListingTrending)
+        val useSeasons = preferences.getBoolean(PREF_USE_SEASONS, PREF_USE_SEASONS_DEFAULT)
+
+        val parsed = KitsuApi.parseAnimePage(response.body.string(), seasonRoles.toSet())
             ?: return AnimesPage(emptyList(), false)
 
-        val animeList = parsed.anime.map { (id, attributes) ->
+        val animeList = parsed.anime.map { item ->
             SAnime.create().apply {
-                title = pickTitle(attributes)
-                thumbnail_url = bestPoster(attributes)
-                url = "kitsu:$id"
-                description = attributes.synopsis.orEmpty()
+                title = pickTitle(item.attributes)
+                thumbnail_url = bestPoster(item.attributes)
+                url = "kitsu:${item.id}"
+                description = item.attributes.synopsis.orEmpty()
                 genre = "" // genres require the categories include; filled in details
-                status = parseKitsuStatus(attributes.status)
+                status = parseKitsuStatus(item.attributes.status)
+                // Seasons routing must happen at list time: the app does not
+                // carry fetch_type over from animeDetailsParse into the entry
+                if (useSeasons && item.hasSeasonRelations) {
+                    fetch_type = FetchType.Seasons
+                }
             }
         }
 
@@ -86,7 +92,6 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     // =============================== Latest ===============================
 
     override fun latestUpdatesRequest(page: Int): Request {
-        currentListingTrending = false
         return GET(KitsuApi.latestUrl(page), headers)
     }
 
@@ -95,21 +100,14 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // =============================== Search ===============================
 
-    // Whether the in-flight listing is the trending endpoint (affects hasNextPage)
-    private var currentListingTrending = false
-
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
         val params = mutableMapOf<String, String>()
         var sort: String? = null
-        var trending = false
 
         filters.forEach { filter ->
             when (filter) {
                 is SelectFilter -> when (filter.name) {
-                    "Sort" -> {
-                        val value = SORT_SELECT_VALUES.getOrNull(filter.state).orEmpty()
-                        if (value == "trending") trending = true else sort = value
-                    }
+                    "Sort" -> sort = SORT_SELECT_VALUES.getOrNull(filter.state).orEmpty().ifBlank { null }
                     "Season" -> params["filter[season]"] = SEASON_SELECT_VALUES.getOrNull(filter.state).orEmpty()
                     "Format" -> params["filter[subtype]"] = FORMAT_SELECT_VALUES.getOrNull(filter.state).orEmpty()
                     "Status" -> params["filter[status]"] = STATUS_SELECT_VALUES.getOrNull(filter.state).orEmpty()
@@ -130,9 +128,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         }
 
-        currentListingTrending = trending
-        val url = if (trending) KitsuApi.trendingUrl(page) else KitsuApi.searchUrl(page, query, params, sort)
-        return GET(url, headers)
+        return GET(KitsuApi.searchUrl(page, query, params, sort), headers)
     }
 
     override fun searchAnimeParse(response: Response) = popularAnimeParse(response)
@@ -175,7 +171,6 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             ?: throw Exception("Failed to parse Kitsu anime details")
 
         val anime = parsed.anime
-        val useSeasons = preferences.getBoolean(PREF_USE_SEASONS, PREF_USE_SEASONS_DEFAULT)
         val animeTitle = pickTitle(anime)
 
         return SAnime.create().apply {
@@ -201,12 +196,6 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
             genre = parsed.categories.joinToString(", ")
             status = parseKitsuStatus(anime.status)
-
-            // Seasons mode is decided here: the app merges this SAnime into the
-            // browse entry, so fetch_type routes the episode fetch afterwards.
-            if (useSeasons && KitsuApi.fetchRelations(client, parsed.id).any { it.role in seasonRoles }) {
-                fetch_type = FetchType.Seasons
-            }
         }
     }
 
@@ -1239,10 +1228,10 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         // Filter option tables (index-aligned with the *NAMES arrays; "" = no filter)
 
         private val SORT_NAMES = arrayOf(
-            "Relevance", "Popularity", "Rating", "Newest", "Trending",
+            "Relevance", "Popularity", "Rating", "Newest",
         )
         private val SORT_SELECT_VALUES = arrayOf(
-            "", "-userCount", "-averageRating", "-startDate", "trending",
+            "", "-userCount", "-averageRating", "-startDate",
         )
 
         private val SEASON_NAMES = arrayOf(

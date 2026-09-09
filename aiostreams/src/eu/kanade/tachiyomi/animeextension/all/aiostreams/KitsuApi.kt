@@ -4,6 +4,11 @@ import eu.kanade.tachiyomi.network.GET
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
@@ -39,6 +44,7 @@ object KitsuApi {
     @Serializable
     data class AnimeListResponse(
         val data: List<AnimeResource>? = null,
+        val included: List<IncludedResource>? = null,
         val links: Links? = null,
     )
 
@@ -53,15 +59,34 @@ object KitsuApi {
         val id: String? = null,
         val type: String? = null,
         val attributes: KitsuAnime? = null,
+        val relationships: Map<String, RelationshipLink>? = null,
     )
 
-    /** Union of `mappings` and `categories` included resources. */
+    /** Union of `mappings`, `categories` and `mediaRelationships` included resources. */
     @Serializable
     data class IncludedResource(
         val id: String? = null,
         val type: String? = null,
         val attributes: IncludedAttributes? = null,
+        val relationships: Map<String, RelationshipLink>? = null,
     )
+
+    /**
+     * A resource linkage entry. `data` is an array for to-many relationships
+     * (mediaRelationships) and an object for to-one ones (posterImage,
+     * destination) — hence the raw JsonElement.
+     */
+    @Serializable
+    data class RelationshipLink(
+        val data: JsonElement? = null,
+    ) {
+        fun refIds(): List<String> = (data as? JsonArray)
+            ?.mapNotNull { (it as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull }
+            .orEmpty()
+
+        fun singleRefId(): String? =
+            (data as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull
+    }
 
     @Serializable
     data class IncludedAttributes(
@@ -177,8 +202,15 @@ object KitsuApi {
     // ============================ Result types =========================
 
     data class AnimePage(
-        val anime: List<Pair<String, KitsuAnime>>, // id + attributes
+        val anime: List<KitsuListItem>,
         val hasNextPage: Boolean,
+    )
+
+    data class KitsuListItem(
+        val id: String,
+        val attributes: KitsuAnime,
+        /** True when any related anime matches the caller's season roles */
+        val hasSeasonRelations: Boolean,
     )
 
     data class AnimeDetails(
@@ -197,12 +229,18 @@ object KitsuApi {
 
     // ============================ URL builders =========================
 
+    // Relations are included on list responses so browse items can carry the
+    // seasons fetch_type up front — the app does not propagate fetch_type
+    // from animeDetailsParse into its entry, so list time is the only chance.
+    private const val INCLUDE_RELATIONS = "mediaRelationships.destination"
+
     /** Popular = most users; offset-paged, `links.next` marks more pages. */
     fun popularUrl(page: Int): String =
         "$API_URL/anime".toHttpUrl().newBuilder()
             .addQueryParameter("page[limit]", PAGE_SIZE.toString())
             .addQueryParameter("page[offset]", offset(page).toString())
             .addQueryParameter("sort", "-userCount")
+            .addQueryParameter("include", INCLUDE_RELATIONS)
             .build().toString()
 
     /** Latest = currently airing, most recently started first. */
@@ -212,15 +250,7 @@ object KitsuApi {
             .addQueryParameter("page[offset]", offset(page).toString())
             .addQueryParameter("filter[status]", "current")
             .addQueryParameter("sort", "-startDate")
-            .build().toString()
-
-    /**
-     * Trending: the endpoint ignores offset (always the same top items), so
-     * this is a single page of up to 40 entries with no follow-up pages.
-     */
-    fun trendingUrl(@Suppress("UNUSED_PARAMETER") page: Int): String =
-        "$API_URL/trending/anime".toHttpUrl().newBuilder()
-            .addQueryParameter("limit", "40")
+            .addQueryParameter("include", INCLUDE_RELATIONS)
             .build().toString()
 
     /**
@@ -231,6 +261,7 @@ object KitsuApi {
         val builder = "$API_URL/anime".toHttpUrl().newBuilder()
             .addQueryParameter("page[limit]", PAGE_SIZE.toString())
             .addQueryParameter("page[offset]", offset(page).toString())
+            .addQueryParameter("include", INCLUDE_RELATIONS)
         if (query.isNotBlank()) {
             builder.addQueryParameter("filter[text]", query.trim())
         }
@@ -251,15 +282,46 @@ object KitsuApi {
 
     // ============================ Body parsers =========================
 
-    /** List of anime + hasNextPage; null when the body can't be parsed. */
-    fun parseAnimePage(body: String, isTrending: Boolean = false): AnimePage? {
+    /**
+     * List of anime + hasNextPage; null when the body can't be parsed.
+     * `seasonRoles` decides which relations mark an entry as multi-season.
+     */
+    fun parseAnimePage(body: String, seasonRoles: Set<String> = emptySet()): AnimePage? {
         val parsed = runCatching { json.decodeFromString<AnimeListResponse>(body) } ?: return null
+
+        val includedById = parsed.included.orEmpty().filterNotNull()
+            .filter { !it.id.isNullOrBlank() }
+            .associateBy { it.id!! }
+
         val anime = parsed.data.orEmpty().mapNotNull { res ->
-            res.id?.let { id -> res.attributes?.let { id to it } }
+            val id = res.id ?: return@mapNotNull null
+            val attributes = res.attributes ?: return@mapNotNull null
+            KitsuListItem(id, attributes, hasRelations(res, includedById, seasonRoles))
         }
-        // Trending can't be paged (endpoint ignores offset) — single page only
-        val hasNext = !isTrending && parsed.links?.next != null
-        return AnimePage(anime, hasNext)
+        return AnimePage(anime, hasNextPage = parsed.links?.next != null)
+    }
+
+    /**
+     * True when the anime links to at least one mediaRelationship whose role
+     * is a season role and whose destination is another anime (not manga).
+     */
+    private fun hasRelations(
+        res: AnimeResource,
+        includedById: Map<String, IncludedResource>,
+        seasonRoles: Set<String>,
+    ): Boolean {
+        if (seasonRoles.isEmpty()) return false
+
+        val relIds = res.relationships?.get("mediaRelationships")?.refIds() ?: return false
+        relIds.forEach { relId ->
+            val rel = includedById[relId] ?: return@forEach
+            val role = rel.attributes?.role ?: return@forEach
+            if (role !in seasonRoles) return@forEach
+
+            val destId = rel.relationships?.get("destination")?.singleRefId() ?: return@forEach
+            if (includedById[destId]?.type == "anime") return true
+        }
+        return false
     }
 
     /** Single anime with extracted mappings + categories; null when unparseable. */

@@ -107,7 +107,22 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         filters.forEach { filter ->
             when (filter) {
                 is SelectFilter -> when (filter.name) {
-                    "Sort" -> sort = SORT_SELECT_VALUES.getOrNull(filter.state).orEmpty().ifBlank { null }
+                    "Sort" -> {
+                        when (SORT_SELECT_VALUES.getOrNull(filter.state).orEmpty()) {
+                            "trending" -> {
+                                // Trending ≈ most popular currently airing. Built on the
+                                // regular /anime endpoint (unlike Kitsu's trending feed,
+                                // which can't page or carry relation includes) so it
+                                // scrolls and supports seasons mode like every other list.
+                                sort = "-userCount"
+                                if (params["filter[status]"].isNullOrBlank()) {
+                                    params["filter[status]"] = "current"
+                                }
+                            }
+                            "" -> {}
+                            else -> sort = SORT_SELECT_VALUES[filter.state]
+                        }
+                    }
                     "Season" -> params["filter[season]"] = SEASON_SELECT_VALUES.getOrNull(filter.state).orEmpty()
                     "Format" -> params["filter[subtype]"] = FORMAT_SELECT_VALUES.getOrNull(filter.state).orEmpty()
                     "Status" -> params["filter[status]"] = STATUS_SELECT_VALUES.getOrNull(filter.state).orEmpty()
@@ -1228,10 +1243,10 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         // Filter option tables (index-aligned with the *NAMES arrays; "" = no filter)
 
         private val SORT_NAMES = arrayOf(
-            "Relevance", "Popularity", "Rating", "Newest",
+            "Relevance", "Popularity", "Rating", "Newest", "Trending",
         )
         private val SORT_SELECT_VALUES = arrayOf(
-            "", "-userCount", "-averageRating", "-startDate",
+            "", "-userCount", "-averageRating", "-startDate", "trending",
         )
 
         private val SEASON_NAMES = arrayOf(

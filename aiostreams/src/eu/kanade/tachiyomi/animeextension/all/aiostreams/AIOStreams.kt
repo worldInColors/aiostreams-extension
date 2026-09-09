@@ -231,63 +231,40 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val segments = response.request.url.pathSegments
         val baseId = segments.getOrNull(segments.indexOf("anime") + 1)
         val main = baseId?.let { KitsuApi.fetchAnime(client, it) } ?: return emptyList()
-        val mainTitle = pickTitle(main.anime)
-        if (currentAnimeTitle.isBlank()) {
-            currentAnimeTitle = mainTitle
-        }
-        val titlePart = "title:${mainTitle.replace("|", " ")}"
 
-        val seasonList = mutableListOf<SAnime>()
-
-        // The main anime as "Season 1"
-        seasonList.add(SAnime.create().apply {
-            title = mainTitle
-            thumbnail_url = bestPoster(main.anime)
-            url = "kitsu:${main.id}|season:1|$titlePart"
-            description = main.anime.synopsis.orEmpty()
-            genre = main.categories.joinToString(", ")
-            status = parseKitsuStatus(main.anime.status)
-            fetch_type = FetchType.Episodes
-            season_number = 1.0
-        })
-
-        // Related anime as further seasons
-        val seenIds = mutableSetOf(main.id)
-        var seasonNum = 2
-        relations.filter { it.role in seasonRoles }
+        // The franchise is numbered chronologically from its start, so opening
+        // a mid-franchise entry (e.g. clicking Season 2 directly, whose only
+        // relation is a prequel) still shows Season 1 as season 1.
+        val franchise = (listOf(KitsuApi.RelatedAnime("", main.id, main.anime)) + relations.filter { it.role in seasonRoles })
+            .distinctBy { it.id }
             .sortedWith(
-                compareBy<KitsuApi.RelatedAnime> { edge ->
-                    // Group by relation type: PREQUEL/PARENT first, then SEQUEL, then others
-                    when (edge.role) {
-                        "prequel", "parent_story" -> 0
-                        "sequel" -> 1
-                        "side_story" -> 2
-                        "spinoff" -> 3
-                        else -> 4
-                    }
-                }.thenBy { edge ->
-                    // Within each group, sort by Kitsu ID (lower = older = earlier season)
-                    edge.id.toLongOrNull() ?: Long.MAX_VALUE
-                },
-            ).forEach { edge ->
-                if (!seenIds.add(edge.id)) return@forEach
-                val relTitle = pickTitle(edge.anime)
+                compareBy<KitsuApi.RelatedAnime> { it.anime.startDate ?: "9999-12-31" }
+                    .thenBy { it.id.toLongOrNull() ?: Long.MAX_VALUE },
+            )
 
-                if (relTitle.isNotBlank()) {
-                    seasonList.add(SAnime.create().apply {
-                        title = relTitle
-                        thumbnail_url = bestPoster(edge.anime)
-                        url = "kitsu:${edge.id}|season:$seasonNum|$titlePart"
-                        description = "Related as: ${edge.role}"
-                        status = parseKitsuStatus(edge.anime.status)
-                        fetch_type = FetchType.Episodes
-                        season_number = seasonNum.toDouble()
-                    })
-                    seasonNum++
+        val franchiseTitle = pickTitle(franchise.first().anime)
+        if (currentAnimeTitle.isBlank()) {
+            currentAnimeTitle = franchiseTitle
+        }
+        val titlePart = "title:${franchiseTitle.replace("|", " ")}"
+
+        return franchise.mapIndexedNotNull { index, entry ->
+            val entryTitle = pickTitle(entry.anime).takeIf { it.isNotBlank() } ?: return@mapIndexedNotNull null
+            SAnime.create().apply {
+                title = entryTitle
+                thumbnail_url = bestPoster(entry.anime)
+                url = "kitsu:${entry.id}|season:${index + 1}|$titlePart"
+                description = if (entry.id == main.id) {
+                    entry.anime.synopsis.orEmpty()
+                } else {
+                    "Related as: ${entry.role}"
                 }
+                genre = if (entry.id == main.id) main.categories.joinToString(", ") else null
+                status = parseKitsuStatus(entry.anime.status)
+                fetch_type = FetchType.Episodes
+                season_number = (index + 1).toDouble()
             }
-
-        return seasonList.sortedBy { it.season_number }
+        }
     }
 
     // ============================== Episodes ==============================
@@ -489,10 +466,21 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                 else -> 0
             }
 
+            // Trailing dateless episodes on a currently-airing show are
+            // announced but unscheduled — Kitsu lists them (airdate=null) long
+            // before broadcast (Polar Opposites S2: eps 11-13). Skip them;
+            // future-DATED episodes are already skipped below.
+            val isAiring = anime.status == "current"
+            var lastDatedEpisode = 0
+            for (n in 1..maxEpisodes) {
+                if (episodeAirDate(n, sources) > 0) lastDatedEpisode = n
+            }
+
             for (epNum in 1..maxEpisodes) {
                 val airDate = episodeAirDate(epNum, sources)
 
                 if (airDate > 0 && airDate > now) continue
+                if (airDate == 0L && isAiring && epNum > lastDatedEpisode) continue
 
                 val epTitle = episodeTitle(epNum, sources)
                 val isFiller = fillerEpisodes.contains(epNum)

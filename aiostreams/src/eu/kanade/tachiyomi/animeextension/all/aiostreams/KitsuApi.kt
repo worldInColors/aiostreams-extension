@@ -377,8 +377,10 @@ object KitsuApi {
     }
 
     /**
-     * All episodes for an anime, paged through at 20 per request.
-     * Only used when AniZip has no episode data.
+     * All episodes for an anime, paged through at 20 per request. Paged with a
+     * short pause and one retry per page — Kitsu throttles bursts (parallel
+     * library updates x long shows), and a throttled page would otherwise
+     * silently truncate the episode list.
      */
     fun fetchEpisodes(client: OkHttpClient, kitsuId: String): Map<Int, KitsuEpisode> {
         val byNumber = mutableMapOf<Int, KitsuEpisode>()
@@ -389,7 +391,13 @@ object KitsuApi {
                 .addQueryParameter("page[limit]", PAGE_SIZE.toString())
                 .addQueryParameter("page[offset]", offset.toString())
                 .build().toString()
-            val body = runCatchingBody(client, url) ?: break
+            val body = runCatchingBody(client, url)
+                ?: run {
+                    // one retry after a beat before giving up on this page
+                    Thread.sleep(300)
+                    runCatchingBody(client, url)
+                }
+                ?: break
             val parsed = runCatching { json.decodeFromString<EpisodeListResponse>(body) } ?: break
             val page = parsed.data.orEmpty()
             if (page.isEmpty()) break
@@ -401,6 +409,7 @@ object KitsuApi {
             if (parsed.links?.next == null) break
             offset += PAGE_SIZE
             pages++
+            Thread.sleep(50) // keep paged fetches under Kitsu's throttle
         }
         return byNumber
     }

@@ -466,21 +466,33 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                 else -> 0
             }
 
-            // Trailing dateless episodes on a currently-airing show are
-            // announced but unscheduled — Kitsu lists them (airdate=null) long
-            // before broadcast (Polar Opposites S2: eps 11-13). Skip them;
-            // future-DATED episodes are already skipped below.
-            val isAiring = anime.status == "current"
-            var lastDatedEpisode = 0
+            // Aired frontier: the last episode any source dates in the PAST.
+            // Future dates must not extend it (a future-dated ep 12 would
+            // otherwise un-hide undated stubs 9-11), and undated episodes
+            // within the frontier stay visible — Kitsu's date coverage lags
+            // real broadcasts (Crayon Shin-chan is dated only through ep 32)
+            // and some airing shows have no dates at all (Holo no Graffiti),
+            // which must fall back to their full list.
+            var lastAiredEpisode = 0
             for (n in 1..maxEpisodes) {
-                if (episodeAirDate(n, sources) > 0) lastDatedEpisode = n
+                val d = episodeAirDate(n, sources)
+                if (d > 0 && d <= now) lastAiredEpisode = n
+            }
+            val listCap = when (anime.status) {
+                // Airing: trim to the frontier when one exists, else trust the list
+                "current" -> if (lastAiredEpisode > 0) lastAiredEpisode else maxEpisodes
+                // Nothing has aired yet — undated/future stubs stay hidden
+                "upcoming", "unreleased" -> lastAiredEpisode
+                // Completed shows often have sparse dates; show everything
+                else -> maxEpisodes
             }
 
             for (epNum in 1..maxEpisodes) {
+                if (epNum > listCap) continue
+
                 val airDate = episodeAirDate(epNum, sources)
 
                 if (airDate > 0 && airDate > now) continue
-                if (airDate == 0L && isAiring && epNum > lastDatedEpisode) continue
 
                 val epTitle = episodeTitle(epNum, sources)
                 val isFiller = fillerEpisodes.contains(epNum)

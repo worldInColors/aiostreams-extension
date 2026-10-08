@@ -81,10 +81,13 @@ Output APK: `aiostreams/build/outputs/apk/`
 
 ### Episode Metadata
 
-- **Kitsu primary**: Episode titles, synopses, thumbnails and air dates come from Kitsu first (best English coverage — AniZip's Naruto data, for instance, has no titles and synopses only through ep 48)
-- **AniZip fallback + IDs**: ani.zip fills metadata gaps and always supplies the cross-service IDs used for stream lookup (Kitsu/MAL/AniList/IMDB/TMDB/TVDB); very long shows (>260 eps) stay AniZip-primary to keep request counts sane
-- **TVDB enrichment** (optional): Add a thetvdb.com API key to fill gaps in titles/overviews/thumbnails
-- **AniDB Support** (Optional): Fill missing episode titles from AniDB
+Each source covers what it maintains best:
+
+- **MAL (via Jikan)**: episode titles, air dates and filler/recap flags, any series length (100 episodes per request; jikanfortheweebs mirror with api.jikan.moe fallback)
+- **AniList (airing shows only)**: the airing clock — `nextAiringEpisode`/`airingSchedule` decides which episodes have actually aired — plus simulcast English titles and thumbnails for brand-new episodes
+- **Kitsu**: synopses and thumbnails (capped at ~260 episodes)
+- **AniZip**: cross-service IDs for stream lookup (Kitsu/MAL/AniList/IMDB/TMDB/TVDB) and fallback episode data
+- **TVDB** (optional API key) / **AniDB** (optional): gap fillers
 - **Title language preference**: English / Romaji / Native
 
 ### Seasons Support

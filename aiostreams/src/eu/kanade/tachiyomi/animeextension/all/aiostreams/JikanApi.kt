@@ -49,6 +49,78 @@ object JikanApi {
         val recap: Boolean? = null,
     )
 
+    // ---- browse listings (this-season calendar, random) ----
+
+    @Serializable
+    data class SeasonListResponse(
+        val data: List<JikanAnimeSearch>? = null,
+        val pagination: Pagination? = null,
+    )
+
+    @Serializable
+    data class RandomResponse(
+        val data: JikanAnimeSearch? = null,
+    )
+
+    @Serializable
+    data class JikanAnimeSearch(
+        @SerialName("mal_id") val malId: Int? = null,
+        val title: String? = null,
+        @SerialName("title_english") val titleEnglish: String? = null,
+        @SerialName("title_japanese") val titleJapanese: String? = null,
+        val synopsis: String? = null,
+        val type: String? = null,
+        val status: String? = null,
+        val airing: Boolean? = null,
+        val images: JikanImages? = null,
+    )
+
+    @Serializable
+    data class JikanImages(
+        val jpg: JikanImage? = null,
+        val webp: JikanImage? = null,
+    )
+
+    @Serializable
+    data class JikanImage(
+        @SerialName("image_url") val imageUrl: String? = null,
+        @SerialName("large_image_url") val largeImageUrl: String? = null,
+    )
+
+    data class JikanListPage(
+        val items: List<JikanAnimeSearch>,
+        val hasNextPage: Boolean,
+    )
+
+    /** Currently-airing season, paged — the simulcast calendar listing. */
+    fun seasonsNowUrl(page: Int): String =
+        "$MIRROR_URL/seasons/now".toHttpUrl().newBuilder()
+            .addQueryParameter("page", page.coerceAtLeast(1).toString())
+            .addQueryParameter("sfw", "true")
+            .addQueryParameter("limit", "24")
+            .build().toString()
+
+    fun randomUrl(): String =
+        "$MIRROR_URL/random/anime".toHttpUrl().newBuilder()
+            .addQueryParameter("sfw", "true")
+            .build().toString()
+
+    fun parseSeasonList(body: String): JikanListPage? {
+        val parsed = try {
+            json.decodeFromString<SeasonListResponse>(body)
+        } catch (e: Exception) {
+            return null
+        }
+        val items = parsed.data.orEmpty().filterNotNull().filter { !it.title.isNullOrBlank() }
+        return JikanListPage(items, hasNextPage = parsed.pagination?.hasNextPage == true)
+    }
+
+    fun parseRandom(body: String): JikanAnimeSearch? = try {
+        json.decodeFromString<RandomResponse>(body).data
+    } catch (e: Exception) {
+        null
+    }
+
     /**
      * All episodes for a MAL anime, keyed by episode number. Paged at 100 per
      * request; mirror first with the official API as fallback, brief pacing

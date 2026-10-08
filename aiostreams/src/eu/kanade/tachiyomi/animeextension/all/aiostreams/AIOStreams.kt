@@ -61,11 +61,32 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
     // ============================== Popular ===============================
 
+    // Set by searchAnimeRequest when the in-flight listing is served by Jikan
+    // (this-season calendar / random) instead of the Kitsu list endpoints
+    private var currentListingJikan: JikanListing? = null
+
+    private enum class JikanListing { Season, Random }
+
     override fun popularAnimeRequest(page: Int): Request {
+        currentListingJikan = null
         return GET(KitsuApi.popularUrl(page), headers)
     }
 
     override fun popularAnimeParse(response: Response): AnimesPage {
+        when (currentListingJikan) {
+            JikanListing.Season -> {
+                val parsed = JikanApi.parseSeasonList(response.body.string())
+                    ?: return AnimesPage(emptyList(), false)
+                return AnimesPage(parsed.items.map(::jikanAnimeToSAnime), parsed.hasNextPage)
+            }
+            JikanListing.Random -> {
+                val item = JikanApi.parseRandom(response.body.string())
+                    ?: return AnimesPage(emptyList(), false)
+                return AnimesPage(listOf(jikanAnimeToSAnime(item)), hasNextPage = false)
+            }
+            null -> {}
+        }
+
         val useSeasons = preferences.getBoolean(PREF_USE_SEASONS, PREF_USE_SEASONS_DEFAULT)
 
         val parsed = KitsuApi.parseAnimePage(response.body.string(), seasonRoles.toSet())
@@ -93,6 +114,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     // =============================== Latest ===============================
 
     override fun latestUpdatesRequest(page: Int): Request {
+        currentListingJikan = null
         return GET(KitsuApi.latestUrl(page), headers)
     }
 
@@ -104,6 +126,7 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     override fun searchAnimeRequest(page: Int, query: String, filters: AnimeFilterList): Request {
         val params = mutableMapOf<String, String>()
         var sort: String? = null
+        currentListingJikan = null
 
         filters.forEach { filter ->
             when (filter) {
@@ -119,6 +142,13 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                                 if (params["filter[status]"].isNullOrBlank()) {
                                     params["filter[status]"] = "current"
                                 }
+                            }
+                            "season-now" -> {
+                                // Simulcast calendar: MAL's current-season list via Jikan
+                                currentListingJikan = JikanListing.Season
+                            }
+                            "random" -> {
+                                currentListingJikan = JikanListing.Random
                             }
                             "" -> {}
                             else -> sort = SORT_SELECT_VALUES[filter.state]
@@ -144,10 +174,41 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         }
 
+        currentListingJikan?.let { listing ->
+            val url = when (listing) {
+                JikanListing.Season -> JikanApi.seasonsNowUrl(page)
+                JikanListing.Random -> JikanApi.randomUrl()
+            }
+            return GET(url, headers)
+        }
         return GET(KitsuApi.searchUrl(page, query, params, sort), headers)
     }
 
     override fun searchAnimeParse(response: Response) = popularAnimeParse(response)
+
+    /**
+     * Browse item from a Jikan/MAL listing (this-season calendar, random).
+     * The URL carries the MAL id; resolveKitsuId translates it through
+     * AniZip when the entry is opened. These listings carry no relations
+     * data, so seasons mode isn't flagged at browse time for them.
+     */
+    private fun jikanAnimeToSAnime(item: JikanApi.JikanAnimeSearch): SAnime = SAnime.create().apply {
+        title = when (preferences.getString(PREF_TITLE_LANG, PREF_TITLE_LANG_DEFAULT)) {
+            "native" -> item.titleJapanese?.takeIf { it.isNotBlank() } ?: item.title
+            "romaji" -> item.title
+            else -> item.titleEnglish?.takeIf { it.isNotBlank() } ?: item.title
+        }.orEmpty()
+        thumbnail_url = item.images?.jpg?.largeImageUrl
+            ?: item.images?.jpg?.imageUrl.orEmpty()
+        url = "mal:${item.malId}"
+        description = item.synopsis.orEmpty()
+        status = when {
+            item.airing == true -> SAnime.ONGOING
+            item.status == "Finished Airing" -> SAnime.COMPLETED
+            item.status == "Not yet aired" -> SAnime.LICENSED
+            else -> SAnime.UNKNOWN
+        }
+    }
 
     override fun getFilterList(): AnimeFilterList = AnimeFilterList(
         AnimeFilter.Header("Filters apply to search"),
@@ -277,6 +338,9 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     // Cache of resolved legacy AniList ids -> Kitsu ids
     private val kitsuIdByAnilist = ConcurrentHashMap<Int, String>()
 
+    // Cache of resolved MAL ids -> Kitsu ids (Jikan calendar/random listings)
+    private val kitsuIdByMal = ConcurrentHashMap<Int, String>()
+
     /**
      * Per-parse episode metadata sources. Kept as locals instead of instance
      * fields so parallel library updates of different entries can't read each
@@ -311,10 +375,13 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         return if (kitsuId != null) {
             GET(KitsuApi.animeDetailsUrl(kitsuId), headers)
         } else {
-            // Unresolvable legacy entry — AniZip-only parse, keyed by the id
+            // Unresolvable entry — AniZip-only parse, keyed by the id
             // embedded in this very request URL
-            val anilistId = base.toIntOrNull() ?: 0
-            GET("https://api.ani.zip/mappings?anilist_id=$anilistId", headers)
+            val lookupParam = when {
+                base.startsWith("mal:") -> "mal_id=" + (base.removePrefix("mal:").toIntOrNull() ?: 0)
+                else -> "anilist_id=" + (base.toIntOrNull() ?: 0)
+            }
+            GET("https://api.ani.zip/mappings?$lookupParam", headers)
         }
     }
 
@@ -333,12 +400,21 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
     /**
      * Resolve the Kitsu id for an entry URL. New URLs are "kitsu:{id}|...";
-     * legacy library entries may hold a bare AniList id, which is translated
-     * through AniZip.
+     * Jikan listings use "mal:{id}", and legacy library entries may hold a
+     * bare AniList id — both translate through AniZip.
      */
     private fun resolveKitsuId(url: String): String? {
         val base = url.split("|").first()
         if (base.startsWith("kitsu:")) return base.removePrefix("kitsu:")
+
+        if (base.startsWith("mal:")) {
+            val malId = base.removePrefix("mal:").toIntOrNull() ?: return null
+            kitsuIdByMal[malId]?.let { return it }
+            val anizip = fetchAniZip("mal_id=$malId")
+            return anizip?.mappings?.kitsuId?.toString()?.also {
+                kitsuIdByMal[malId] = it
+            }
+        }
 
         val anilistId = base.toIntOrNull() ?: return null
         kitsuIdByAnilist[anilistId]?.let { return it }
@@ -1330,10 +1406,10 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         // Filter option tables (index-aligned with the *NAMES arrays; "" = no filter)
 
         private val SORT_NAMES = arrayOf(
-            "Relevance", "Popularity", "Rating", "Newest", "Trending",
+            "Relevance", "Popularity", "Rating", "Newest", "Trending", "This Season", "Random",
         )
         private val SORT_SELECT_VALUES = arrayOf(
-            "", "-userCount", "-averageRating", "-startDate", "trending",
+            "", "-userCount", "-averageRating", "-startDate", "trending", "season-now", "random",
         )
 
         private val SEASON_NAMES = arrayOf(

@@ -282,10 +282,19 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
      * fields so parallel library updates of different entries can't read each
      * other's AniZip/Kitsu/TVDB data (GitHub issue #3: entries showing another
      * show's episode list after a Global Update until manually refreshed).
+     *
+     * Layer responsibilities:
+     *  - MAL/Jikan: episode titles + airdates + filler/recap flags (any length, 100/page)
+     *  - AniList: the airing clock (schedule + next episode) for airing shows
+     *  - Kitsu: synopses + thumbnails, capped (pages at 20/request)
+     *  - AniZip: cross-service IDs + fallback episodes
+     *  - TVDB/AniDB: optional gap fillers
      */
     private class EpisodeSources(
         val anizip: AniZipResponse?,
         val kitsu: Map<Int, KitsuApi.KitsuEpisode>,
+        val jikan: Map<Int, JikanApi.JikanEpisode>,
+        val airing: AniListApi.AiringInfo?,
         val tvdb: Map<String, TvDbApi.EpisodeData>,
         val anidb: Map<String, String>,
     ) {
@@ -370,20 +379,43 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
         val anizip = fetchAniZip("kitsu_id=${details.id}")
         val anizipEpisodes = anizip?.episodes ?: emptyMap()
+        val malId = anizip?.mappings?.myAnimeListId
+        val anilistId = anizip?.mappings?.aniListId
 
-        // Kitsu is the primary episode-metadata source: its English titles,
-        // synopses and thumbnails cover long shows far better than AniZip
-        // (AniZip's Naruto and One Piece entries have no English titles at
-        // all). Kitsu pages at 20/request, so very long shows cost dozens of
-        // sequential requests — fetched anyway since AniZip has nothing
-        // better to offer there; the app caches the resulting list.
-        val kitsuEpisodes = KitsuApi.fetchEpisodes(client, details.id)
+        // The airing clock: for airing shows AniList's schedule is the
+        // authoritative "what has actually aired" (Kitsu ships dateless stubs,
+        // MAL lags on brand-new episodes). Also brings simulcast titles/thumbs.
+        val airing = if (details.anime.status == "current" || details.anime.status == "upcoming") {
+            anilistId?.let { AniListApi.fetchAiringInfo(client, it) }
+        } else {
+            null
+        }
+
+        // MAL episode data: titles, airdates, filler/recap flags at any length
+        val jikanEpisodes = if (malId != null && malId > 0) {
+            JikanApi.fetchEpisodes(client, malId)
+        } else {
+            emptyMap()
+        }
+
+        // Kitsu now serves synopses + thumbnails; its 20-per-page fetch is
+        // capped, with long shows living on Jikan data instead.
+        val totalEpisodes = details.anime.episodeCount ?: 0
+        val knownEpisodes = maxOf(totalEpisodes, anizipEpisodes.size, jikanEpisodes.size)
+        val kitsuEpisodes = if (knownEpisodes <= KITSU_EPISODE_FETCH_CAP) {
+            KitsuApi.fetchEpisodes(client, details.id)
+        } else {
+            emptyMap()
+        }
 
         val tvdbEpisodes = loadTvdbEpisodes(details, anizip)
-        val partial = EpisodeSources(anizip, kitsuEpisodes, tvdbEpisodes, emptyMap())
+        val partial = EpisodeSources(anizip, kitsuEpisodes, jikanEpisodes, airing, tvdbEpisodes, emptyMap())
         val anidbTitles = fetchAniDbTitlesIfNeeded(details, partial)
 
-        return buildEpisodeList(details, EpisodeSources(anizip, kitsuEpisodes, tvdbEpisodes, anidbTitles))
+        return buildEpisodeList(
+            details,
+            EpisodeSources(anizip, kitsuEpisodes, jikanEpisodes, airing, tvdbEpisodes, anidbTitles),
+        )
     }
 
     /**
@@ -414,13 +446,16 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val tvdbEpisodes = sources.tvdb
 
         val metadataStatus = buildList {
-            if (anizipEpisodes.isNotEmpty()) add("AniZip: ${anizipEpisodes.size}")
+            if (sources.jikan.isNotEmpty()) add("MAL: ${sources.jikan.size}")
+            if (sources.airing?.schedule?.isNotEmpty() == true) add("AniList: ${sources.airing.schedule.size}")
             if (kitsuEpisodes.isNotEmpty()) add("Kitsu: ${kitsuEpisodes.size}")
+            if (anizipEpisodes.isNotEmpty()) add("AniZip: ${anizipEpisodes.size}")
             if (tvdbEpisodes.isNotEmpty()) add("TVDB: ${tvdbEpisodes.size}")
             if (sources.anidb.isNotEmpty()) add("AniDB: ${sources.anidb.size}")
         }.joinToString(", ").ifBlank { "No episode metadata" }
 
-        val fillerEpisodes = if (preferences.getBoolean(PREF_MARK_FILLERS, PREF_MARK_FILLERS_DEFAULT) && currentAnimeTitle.isNotBlank()) {
+        val markFillers = preferences.getBoolean(PREF_MARK_FILLERS, PREF_MARK_FILLERS_DEFAULT)
+        var fillerEpisodes = if (markFillers && currentAnimeTitle.isNotBlank()) {
             try {
                 val slug = FillerListApi.titleToSlug(currentAnimeTitle)
                 FillerListApi.getFillerEpisodes(client, slug)
@@ -429,6 +464,10 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             }
         } else {
             emptySet()
+        }
+        // MAL maintains filler flags per episode — union them in
+        if (markFillers) {
+            fillerEpisodes += sources.jikan.filter { it.value.filler == true }.keys
         }
 
         val episodeList = mutableListOf<SEpisode>()
@@ -458,9 +497,8 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
             )
         } else {
             val maxEpisodes = when {
-                // Kitsu numbers only aired episodes; AniZip folds specials
-                // into the numeric range (Naruto: 246 keys for 220 episodes)
-                kitsuEpisodes.isNotEmpty() -> kitsuEpisodes.keys.maxOrNull() ?: totalEpisodes
+                sources.jikan.isNotEmpty() -> maxOf(sources.jikan.keys.maxOrNull() ?: 0, anizipEpisodes.keys.mapNotNull { it.toIntOrNull() }.maxOrNull() ?: 0, kitsuEpisodes.keys.maxOrNull() ?: 0)
+                kitsuEpisodes.isNotEmpty() -> maxOf(kitsuEpisodes.keys.maxOrNull() ?: 0, anizipEpisodes.keys.mapNotNull { it.toIntOrNull() }.maxOrNull() ?: 0)
                 anizipEpisodes.isNotEmpty() -> anizipEpisodes.keys.mapNotNull { it.toIntOrNull() }.maxOrNull() ?: totalEpisodes
                 totalEpisodes > 0 -> totalEpisodes
                 else -> 0
@@ -478,13 +516,17 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
                 val d = episodeAirDate(n, sources)
                 if (d > 0 && d <= now) lastAiredEpisode = n
             }
-            val listCap = when (anime.status) {
+            var listCap = when (anime.status) {
                 // Airing: trim to the frontier when one exists, else trust the list
                 "current" -> if (lastAiredEpisode > 0) lastAiredEpisode else maxEpisodes
                 // Nothing has aired yet — undated/future stubs stay hidden
                 "upcoming", "unreleased" -> lastAiredEpisode
                 // Completed shows often have sparse dates; show everything
                 else -> maxEpisodes
+            }
+            // AniList's next airing episode is the most trustworthy live count
+            sources.airing?.nextEpisode?.let { next ->
+                if (next > 1) listCap = listCap.coerceAtMost(next - 1)
             }
 
             for (epNum in 1..maxEpisodes) {
@@ -529,12 +571,14 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         return episodeList.sortedByDescending { it.episode_number }
     }
 
-    // ---- per-episode metadata merge: Kitsu first, AniZip fills gaps, TVDB
-    // ---- and AniDB last. Within titles: English before romaji before Japanese.
+    // ---- per-episode metadata merge: MAL/Jikan titles first (official
+    // ---- English, any length), AniList simulcast next, then Kitsu/AniZip/
+    // ---- TVDB gaps; AniDB last. Airdates lead with the AniList schedule.
 
     private fun hasEpisodeData(epNum: Int, sources: EpisodeSources): Boolean =
         sources.anizipEpisodes.containsKey(epNum.toString()) ||
             sources.kitsu.containsKey(epNum) ||
+            sources.jikan.containsKey(epNum) ||
             sources.tvdb.containsKey(epNum.toString())
 
     private fun episodeTitle(epNum: Int, sources: EpisodeSources): String {
@@ -543,10 +587,13 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
         val tvdbName = sources.tvdb[epNum.toString()]?.name
 
         return sequenceOf(
+            sources.jikan[epNum]?.title,
+            sources.airing?.streamingTitles?.get(epNum),
             kitsuTitles?.enUs,
             kitsuTitles?.en,
             anizipTitles?.get("en"),
             tvdbName,
+            sources.jikan[epNum]?.titleRomanji,
             kitsuTitles?.enJp,
             anizipTitles?.get("en_jp"),
             sources.anidb[epNum.toString()],
@@ -556,6 +603,8 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
     }
 
     private fun episodeAirDate(epNum: Int, sources: EpisodeSources): Long {
+        sources.airing?.schedule?.get(epNum)?.let { return it }
+        sources.jikan[epNum]?.aired?.let { return parseDate(it) }
         sources.anizipEpisodes[epNum.toString()]?.airDate?.let { return parseDate(it) }
         sources.kitsu[epNum]?.airDate?.let { return parseDate(it) }
         sources.tvdb[epNum.toString()]?.airDate?.let { return parseDate(it) }
@@ -582,6 +631,8 @@ class AIOStreams : ConfigurableAnimeSource, AnimeHttpSource() {
 
     private fun episodeImage(epNum: Int, sources: EpisodeSources): String? {
         sources.kitsu[epNum]?.thumbnail?.original
+            ?.takeIf { it.isNotBlank() }?.let { return it }
+        sources.airing?.streamingThumbnails?.get(epNum)
             ?.takeIf { it.isNotBlank() }?.let { return it }
         sources.anizipEpisodes[epNum.toString()]?.image
             ?.takeIf { it.isNotBlank() }?.let { return it }
